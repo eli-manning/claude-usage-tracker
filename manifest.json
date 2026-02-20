@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Usage Tracker",
+  "version": "1.0.0",
+  "description": "Track and visualize your Claude.ai usage over time",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://claude.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/settings/usage*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_badge_bg_color": "#CC785C"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

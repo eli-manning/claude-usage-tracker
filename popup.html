@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Claude Usage</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f0e0d;
+      --surface: #1a1917;
+      --surface2: #242220;
+      --border: #2e2c29;
+      --text: #e8e3dc;
+      --muted: #6b6560;
+      --accent: #CC785C;
+      --accent-dim: rgba(204, 120, 92, 0.15);
+      --green: #5cb870;
+      --yellow: #d4a843;
+      --red: #c85c5c;
+    }
+
+    body {
+      width: 340px;
+      min-height: 420px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Syne', sans-serif;
+      padding: 0;
+      overflow-x: hidden;
+    }
+
+    .header {
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo {
+      width: 28px;
+      height: 28px;
+      background: var(--accent);
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 800;
+      color: white;
+      letter-spacing: -1px;
+    }
+
+    .title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      color: var(--text);
+    }
+
+    .subtitle {
+      font-size: 10px;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      font-weight: 300;
+      margin-top: 1px;
+    }
+
+    .refresh-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+    }
+    .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .refresh-btn.spinning { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .content { padding: 16px 20px; }
+
+    .no-data {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .no-data a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .usage-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .usage-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.2s;
+    }
+
+    .usage-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--bar-color, var(--accent));
+      transform: scaleX(var(--bar-pct, 0));
+      transform-origin: left;
+      transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    /* Badge indicator dot on the active card */
+    .usage-card.badge-active {
+      border-color: var(--bar-color, var(--accent));
+    }
+    .usage-card.badge-active .card-label::after {
+      content: ' ●';
+      font-size: 7px;
+      opacity: 0.7;
+      vertical-align: middle;
+    }
+
+    .card-label {
+      font-size: 9px;
+      font-family: 'DM Mono', monospace;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .card-value {
+      font-size: 32px;
+      font-weight: 800;
+      line-height: 1;
+      color: var(--bar-color, var(--accent));
+      letter-spacing: -2px;
+    }
+
+    .card-pct {
+      font-size: 14px;
+      font-weight: 400;
+      letter-spacing: 0;
+      opacity: 0.7;
+    }
+
+    .card-reset {
+      font-size: 9px;
+      font-family: 'DM Mono', monospace;
+      color: var(--muted);
+      margin-top: 6px;
+      line-height: 1.4;
+    }
+
+    .bar-track {
+      height: 4px;
+      background: var(--surface2);
+      border-radius: 2px;
+      margin-top: 10px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      background: var(--bar-color, var(--accent));
+      border-radius: 2px;
+      transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+      width: var(--pct, 0%);
+    }
+
+    /* Badge toggle row */
+    .badge-toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin-bottom: 10px;
+    }
+
+    .badge-toggle-label {
+      font-size: 9px;
+      font-family: 'DM Mono', monospace;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .badge-icon {
+      display: inline-block;
+      background: var(--accent);
+      color: white;
+      font-size: 8px;
+      font-weight: 700;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-family: 'DM Mono', monospace;
+      letter-spacing: 0;
+    }
+
+    .badge-btns {
+      display: flex;
+      gap: 4px;
+    }
+
+    .badge-toggle-btn {
+      font-size: 10px;
+      font-family: 'DM Mono', monospace;
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 3px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .badge-toggle-btn.active {
+      background: var(--accent-dim);
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .section-title {
+      font-size: 9px;
+      font-family: 'DM Mono', monospace;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .chart-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 10px;
+    }
+
+    .chart-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .chart-tabs {
+      display: flex;
+      gap: 6px;
+    }
+
+    .chart-tab {
+      font-size: 10px;
+      font-family: 'DM Mono', monospace;
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 3px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .chart-tab.active {
+      background: var(--accent-dim);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    canvas#chart {
+      width: 100% !important;
+      height: 80px !important;
+    }
+
+    .open-link {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      padding: 10px;
+      background: var(--accent-dim);
+      border: 1px solid rgba(204, 120, 92, 0.25);
+      border-radius: 8px;
+      color: var(--accent);
+      font-family: 'Syne', sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.2s;
+      margin-top: 8px;
+    }
+    .open-link:hover { background: rgba(204, 120, 92, 0.25); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">C</div>
+      <div>
+        <div class="title">Usage Tracker</div>
+        <div class="subtitle" id="lastUpdated">no data yet</div>
+      </div>
+    </div>
+    <button class="refresh-btn" id="refreshBtn" title="Refresh data">↻</button>
+  </div>
+
+  <div class="content">
+    <div id="noData" class="no-data" style="display:none">
+      <p style="margin-bottom:8px">No usage data yet.</p>
+      <p>Visit <a href="https://claude.ai/settings/usage" target="_blank">claude.ai/settings/usage</a> to load your stats, or click refresh.</p>
+    </div>
+
+    <div id="mainContent" style="display:none">
+      <div class="usage-grid">
+        <div class="usage-card" id="sessionCard" style="--bar-color: var(--accent)">
+          <div class="card-label">Session</div>
+          <div class="card-value"><span id="sessionVal">—</span><span class="card-pct">%</span></div>
+          <div class="bar-track"><div class="bar-fill" id="sessionBar" style="--pct: 0%"></div></div>
+          <div class="card-reset" id="sessionReset"></div>
+        </div>
+        <div class="usage-card" id="weeklyCard" style="--bar-color: var(--accent)">
+          <div class="card-label">Weekly</div>
+          <div class="card-value"><span id="weeklyVal">—</span><span class="card-pct">%</span></div>
+          <div class="bar-track"><div class="bar-fill" id="weeklyBar" style="--pct: 0%"></div></div>
+          <div class="card-reset" id="weeklyReset"></div>
+        </div>
+      </div>
+
+      <!-- Badge toggle row -->
+      <div class="badge-toggle-row">
+        <div class="badge-toggle-label">
+          <span class="badge-icon">28%</span>
+          icon badge shows
+        </div>
+        <div class="badge-btns">
+          <button class="badge-toggle-btn" data-pref="session">Session</button>
+          <button class="badge-toggle-btn active" data-pref="weekly">Weekly</button>
+        </div>
+      </div>
+
+      <div class="chart-container">
+        <div class="chart-header">
+          <div class="section-title">History</div>
+          <div class="chart-tabs">
+            <button class="chart-tab active" data-type="weekly">Weekly</button>
+            <button class="chart-tab" data-type="session">Session</button>
+          </div>
+        </div>
+        <canvas id="chart"></canvas>
+      </div>
+
+      <a href="https://claude.ai/settings/usage" target="_blank" class="open-link">
+        Open Usage Settings ↗
+      </a>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
