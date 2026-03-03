@@ -13,6 +13,7 @@
     --text: #e6e6e6;
     --muted: #505050;
     --sub: #333;
+    --accent: #CC785C;
     --green: #4db876;
     --yellow: #d4a843;
     --red: #c95c5c;
@@ -282,13 +283,13 @@
     if (pct == null) return 'var(--muted)';
     if (pct >= 90) return 'var(--red)';
     if (pct >= 70) return 'var(--yellow)';
-    return 'var(--green)';
+    return 'var(--accent)';
   }
 
   function colorHex(pct) {
     if (pct >= 90) return '#c95c5c';
     if (pct >= 70) return '#d4a843';
-    return '#4db876';
+    return '#CC785C';
   }
 
   function ago(ts) {
@@ -322,7 +323,7 @@
     if (!data || (data.session == null && data.weekly == null)) {
       el.innerHTML = `
         <div class="error-wrap">
-          <div class="error-msg">${data?.error || 'Fetching usage data...'}</div>
+          <div class="error-msg">${data?.error || 'Fetching usage...'}</div>
           ${data?.error ? '<div class="error-cmd">npm i -g @anthropic-ai/claude-code</div>' : ''}
         </div>`;
       chart = null;
