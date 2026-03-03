@@ -52,23 +52,21 @@ function parseUsageOutput(raw) {
   let currentBlock = null;
 
   for (const line of lines) {
-    // Identify which section we are in
-    if (/current session/i.test(line)) {
+    // Use \s+ so cursor-right expansions (multiple spaces) don't break detection
+    if (/current\s+session/i.test(line)) {
       currentBlock = "session";
       continue;
-    } else if (/current week/i.test(line)) {
+    } else if (/current\s+week/i.test(line)) {
       currentBlock = "weekly";
       continue;
-    } else if (/extra usage/i.test(line)) {
+    } else if (/extra\s+usage/i.test(line)) {
       currentBlock = null;
     }
 
     if (currentBlock === "session") {
-      // Look for percentage (e.g., "18%")
       const pctMatch = line.match(/(\d+)%\s*used/i);
       if (pctMatch) result.session = parseInt(pctMatch[1]);
 
-      // Look for reset time
       const resetMatch = line.match(/Resets\s+(.+)/i);
       if (resetMatch) result.sessionReset = "Resets " + resetMatch[1].trim();
     }
@@ -274,35 +272,77 @@ function runClaudeUsage() {
 
 // ─── Tray icon ───────────────────────────────────────────────────────────────
 
-function makeTrayIcon(pct, type) {
-  // Create a small canvas-like icon using nativeImage
-  // We'll use a simple template image approach - show text in title on mac
-  return nativeImage.createEmpty();
+// Generate the orange Claude-style icon with the session % drawn on it.
+// Uses the popup window's renderer canvas (no extra deps needed).
+async function generateTrayIcon(pct) {
+  if (!popupWindow || popupWindow.isDestroyed() || popupWindow.webContents.isLoading()) {
+    return null;
+  }
+  try {
+    const label = JSON.stringify(pct != null ? String(pct) + "%" : '?');
+    const dataURL = await popupWindow.webContents.executeJavaScript(`
+      (() => {
+        const c = document.createElement('canvas');
+        c.width = c.height = 56;
+        const ctx = c.getContext('2d');
+        // Orange rounded-rect background (Claude brand color)
+        const r = 11;
+        ctx.beginPath();
+        ctx.moveTo(r, 0); ctx.lineTo(56-r, 0);
+        ctx.arcTo(56, 0, 56, r, r); ctx.lineTo(56, 56-r);
+        ctx.arcTo(56, 56, 56-r, 56, r); ctx.lineTo(r, 56);
+        ctx.arcTo(0, 56, 0, 56-r, r); ctx.lineTo(0, r);
+        ctx.arcTo(0, 0, r, 0, r); ctx.closePath();
+        ctx.fillStyle = '#CC785C';
+        ctx.fill();
+        // White session % number
+        const text = ${label};
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold ' + (text.length > 2 ? '19' : '24') + 'px -apple-system, sans-serif';
+        ctx.fillText(text, 28, 29);
+        return c.toDataURL();
+      })()
+    `);
+    return nativeImage.createFromDataURL(dataURL).resize({ width: 28, height: 28 });
+  } catch (e) {
+    log('icon gen failed:', e.message);
+    return null;
+  }
 }
 
-function updateTrayTitle() {
+async function updateTrayTitle() {
   if (!tray) return;
 
   const { session, weekly, error } = usageData;
+  const sPct = session != null ? session : null;
+  const wPct = weekly != null ? weekly : null;
 
   if (error) {
+    tray.setImage(nativeImage.createEmpty());
     tray.setTitle('C !');
     tray.setToolTip('Claude Tray: ' + error);
     return;
   }
 
-  if (session == null && weekly == null) {
+  if (sPct == null && wPct == null) {
+    tray.setImage(nativeImage.createEmpty());
     tray.setTitle('C ...');
     tray.setToolTip('Claude Tray: fetching usage...');
     return;
   }
 
-  // Show weekly by default in title (most important)
-  const wPct = weekly != null ? weekly : '?';
-  const sPct = session != null ? session : '?';
+  tray.setToolTip(`Claude Usage — Session: ${sPct ?? '?'}%  Weekly: ${wPct ?? '?'}%`);
 
-  tray.setTitle(`${sPct}s  ${wPct}w`);
-  tray.setToolTip(`Claude Usage — Session: ${sPct}%  Weekly: ${wPct}%`);
+  const icon = await generateTrayIcon(sPct);
+  if (icon) {
+    tray.setImage(icon);
+    tray.setTitle('');
+  } else {
+    tray.setImage(nativeImage.createEmpty());
+    tray.setTitle(`${sPct ?? '?'}s  ${wPct ?? '?'}w`);
+  }
 }
 
 // ─── Popup window ─────────────────────────────────────────────────────────────
@@ -380,7 +420,7 @@ ipcMain.handle('refresh', async () => {
   const data = await runClaudeUsage();
   if (data) {
     usageData = { session: null, weekly: null, ...data, lastUpdated: Date.now() };
-    updateTrayTitle();
+    await updateTrayTitle();
     if (popupWindow && !popupWindow.isDestroyed()) {
       popupWindow.webContents.send('usage-update', usageData);
     }
@@ -408,11 +448,17 @@ app.whenReady().then(async () => {
 
   createPopupWindow();
 
+  // Wait for the popup page to load so canvas icon generation works
+  await new Promise(resolve => {
+    if (!popupWindow.webContents.isLoading()) return resolve();
+    popupWindow.webContents.once('did-finish-load', resolve);
+  });
+
   // Initial fetch
   const data = await runClaudeUsage();
   if (data) {
     usageData = { session: null, weekly: null, ...data, lastUpdated: Date.now() };
-    updateTrayTitle();
+    await updateTrayTitle();
   }
 
   // Poll every 5 minutes
@@ -420,7 +466,7 @@ app.whenReady().then(async () => {
     const data = await runClaudeUsage();
     if (data) {
       usageData = { session: null, weekly: null, ...data, lastUpdated: Date.now() };
-      updateTrayTitle();
+      await updateTrayTitle();
       if (popupWindow && popupWindow.isVisible()) {
         popupWindow.webContents.send('usage-update', usageData);
       }
