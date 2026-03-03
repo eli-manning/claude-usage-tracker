@@ -1,18 +1,22 @@
 # Claude Tray
 
-Menu bar / system tray app that shows your Claude Code usage at a glance — no browser required.
+Menu bar / system tray app that shows your Claude Code CLI usage at a glance — no browser required.
 
 ## Features
 
-- **Live percentages** — session and weekly usage in the menu bar
-- **Color-coded status** — green / yellow / red based on how close you are to limits
+- **Live percentages** — session and weekly usage displayed in the popup
+- **Tray icon** — shows your current session % on an orange icon in the menu bar / system tray at all times
+- **Color-coded** — orange → yellow → red as you approach your limits (70% and 90% thresholds)
+- **Reset times** — shows when your session and weekly limits reset, with timezone stripped for readability
 - **Auto-refresh** — re-runs `claude /usage` every 5 minutes in the background
-- **Usage history** — mini chart in the popup shows trends over your last 30 readings
+- **Usage history** — chart in the popup shows trends across your last 40 readings (up to 200 stored)
+- **Dynamic popup width** — the popup grows wider to fit 3-digit percentages (e.g. 100%) without shrinking text
 - **Cross-platform** — works on macOS (menu bar), Windows and Linux (system tray)
 
 ## Requirements
 
 - **Node.js** v18+
+- **Python 3** (macOS / Linux only — used to run the PTY wrapper)
 - **Claude Code** installed and authenticated:
   ```bash
   npm i -g @anthropic-ai/claude-code
@@ -44,13 +48,21 @@ npm run build:linux  # → dist/Claude Tray.AppImage
 
 ## How it works
 
-On each refresh the app spawns a `claude` subprocess, sends `/usage` to its stdin, waits for the output, then parses the session and weekly percentages. No network requests, no API keys — it reads from your existing Claude Code session.
+On macOS and Linux, the app uses a Python PTY wrapper (`pty-wrapper.py`) to spawn `claude /usage` inside a pseudo-terminal — this is needed because Claude Code requires a TTY to run. The wrapper streams output back to the Electron main process, which parses the session and weekly percentages out of the ANSI-formatted output.
+
+On Windows, `claude /usage` is called directly since a PTY wrapper isn't needed.
+
+No network requests are made and no API keys are required — everything reads from your existing authenticated Claude Code session.
 
 ## Troubleshooting
 
 **"Could not run claude"** — `claude` isn't on your PATH.
 Run `which claude` to check. If missing: `npm i -g @anthropic-ai/claude-code`
 
-**Stuck on "fetching…"** — open a terminal and run `claude` manually to confirm you're authenticated.
+**Stuck on "fetching…"** — open a terminal and run `claude /usage` manually to confirm you're authenticated and it returns output.
 
-**Shows 0% when usage is very low** — Claude reports usage below a threshold as "Under", which this app maps to 0%. That's correct behavior.
+**macOS: permission error on first launch** — macOS may block the app since it isn't notarized. Go to System Settings → Privacy & Security → scroll down and click "Open Anyway".
+
+**Shows 0% when usage is very low** — Claude reports usage below the minimum threshold as "Under 5%", which this app maps to 0%. That's expected.
+
+**Python not found** — make sure `python3` is on your PATH. On macOS it ships with Xcode Command Line Tools: `xcode-select --install`
