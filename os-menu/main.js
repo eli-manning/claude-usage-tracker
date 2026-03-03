@@ -342,7 +342,7 @@ async function updateTrayTitle() {
 
 function createPopupWindow() {
   popupWindow = new BrowserWindow({
-    width: 320,
+    width: 315,
     height: 370,
     show: false,
     frame: false,
@@ -422,6 +422,20 @@ function togglePopup() {
 // ─── IPC handlers ────────────────────────────────────────────────────────────
 
 ipcMain.handle("get-usage", () => usageData);
+
+ipcMain.handle("set-window-width", (_, width) => {
+  if (!popupWindow || popupWindow.isDestroyed()) return;
+  const [, height] = popupWindow.getSize();
+  popupWindow.setSize(width, height);
+  // Recenter over tray icon after resize
+  if (tray) {
+    const trayBounds = tray.getBounds();
+    const display = screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y });
+    let x = Math.round(trayBounds.x + trayBounds.width / 2 - width / 2);
+    x = Math.max(display.bounds.x + 8, Math.min(x, display.bounds.x + display.bounds.width - width - 8));
+    popupWindow.setPosition(x, popupWindow.getPosition()[1]);
+  }
+});
 
 ipcMain.handle("refresh", async () => {
   const data = await runClaudeUsage();

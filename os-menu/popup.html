@@ -21,7 +21,7 @@
   }
 
   html, body {
-    width: 320px;
+    width: 100%;
     height: 370px;
     background: transparent;
     overflow: hidden;
@@ -32,7 +32,7 @@
   }
 
   .shell {
-    width: 320px;
+    width: 100%;
     height: 370px;
     background: var(--bg);
     border: 1px solid var(--border);
@@ -278,6 +278,7 @@
   let currentData = null;
   let chart = null;
   let nextAt = Date.now() + 5 * 60 * 1000;
+  let lastSeenUpdate = null;
 
   function color(pct) {
     if (pct == null) return 'var(--muted)';
@@ -324,6 +325,17 @@
         </div>
         ${reset ? `<div class="stat-reset">${formatReset(reset)}</div>` : ''}
       </div>`;
+  }
+
+  function computeWidth(data) {
+    if (!data || (data.session == null && data.weekly == null)) return 315;
+    const digits = Math.max(
+      String(data.session ?? 0).length,
+      String(data.weekly ?? 0).length
+    );
+    if (digits >= 3) return 345;
+    if (digits <= 1) return 295;
+    return 315;
   }
 
   function render(data) {
@@ -442,6 +454,7 @@
     currentData = data;
     document.getElementById('lastUpdated').textContent = 'updated ' + ago(data?.lastUpdated);
     render(data);
+    window.claudeAPI.setWindowWidth(computeWidth(data));
     if (data && (data.session != null || data.weekly != null)) {
       history.push({ ...data, timestamp: Date.now() });
       if (history.length > 200) history.shift();
@@ -463,6 +476,7 @@
     const data = await window.claudeAPI.refresh();
     btn.classList.remove('spinning');
     nextAt = Date.now() + 5 * 60 * 1000;
+    lastSeenUpdate = data?.lastUpdated ?? null;
     updateUI(data);
   });
 
@@ -470,7 +484,10 @@
 
   window.claudeAPI.onUsageUpdate(data => {
     updateUI(data);
-    nextAt = Date.now() + 5 * 60 * 1000;
+    if (data?.lastUpdated !== lastSeenUpdate) {
+      lastSeenUpdate = data?.lastUpdated ?? null;
+      nextAt = (data?.lastUpdated ?? Date.now()) + 5 * 60 * 1000;
+    }
   });
 
   window.claudeAPI.getUsage().then(data => updateUI(data));
