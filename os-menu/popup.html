@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f0f0f;
+    --surface: #181818;
+    --border: #242424;
+    --dim: #2a2a2a;
+    --text: #e6e6e6;
+    --muted: #505050;
+    --sub: #333;
+    --green: #4db876;
+    --yellow: #d4a843;
+    --red: #c95c5c;
+    --radius: 12px;
+  }
+
+  html, body {
+    width: 320px;
+    height: 370px;
+    background: transparent;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+    -webkit-app-region: no-drag;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    width: 320px;
+    height: 370px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.75), 0 0 0 0.5px rgba(255,255,255,0.04) inset;
+  }
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 13px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .header-left { display: flex; flex-direction: column; gap: 1px; }
+
+  .app-name {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--text);
+  }
+
+  .update-time {
+    font-size: 10px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .header-btns { display: flex; gap: 4px; }
+
+  .btn {
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--border);
+    background: none;
+    border-radius: 5px;
+    color: var(--muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    transition: all 0.1s;
+  }
+  .btn:hover { border-color: var(--text); color: var(--text); }
+  .btn.spinning { animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Stats ── */
+  .stats {
+    padding: 13px 13px 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 13px;
+    flex-shrink: 0;
+  }
+
+  .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .stat-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+
+  .stat-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .stat-num {
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: -1.5px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat-pct {
+    font-size: 14px;
+    font-weight: 500;
+    opacity: 0.55;
+    letter-spacing: 0;
+  }
+
+  .bar-track {
+    height: 3px;
+    background: var(--dim);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.9s cubic-bezier(0.16,1,0.3,1);
+  }
+
+  .stat-reset {
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .sep {
+    height: 1px;
+    background: var(--border);
+    margin: 0;
+    flex-shrink: 0;
+  }
+
+  /* ── History ── */
+  .history {
+    flex: 1;
+    padding: 10px 13px 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .history-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 7px;
+    flex-shrink: 0;
+  }
+
+  .history-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .toggles {
+    display: flex;
+    gap: 2px;
+    background: var(--dim);
+    padding: 2px;
+    border-radius: 5px;
+  }
+
+  .tog {
+    font-size: 9px;
+    background: none;
+    border: none;
+    color: var(--muted);
+    padding: 2px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.1s;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+  .tog.on { background: var(--surface); color: var(--text); }
+
+  canvas { display: block; width: 100% !important; flex-shrink: 0; }
+
+  /* ── Error ── */
+  .error-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 20px;
+    text-align: center;
+  }
+  .error-msg { font-size: 12px; color: var(--muted); line-height: 1.55; }
+  .error-cmd { font-size: 10px; color: var(--muted); opacity: 0.6; margin-top: 4px; }
+
+  /* ── Footer ── */
+  .footer {
+    padding: 7px 13px 11px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+
+  .foot-text {
+    font-size: 10px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .pulse {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--green);
+    flex-shrink: 0;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <div class="header">
+    <div class="header-left">
+      <div class="app-name">Claude Usage</div>
+      <div class="update-time" id="lastUpdated">fetching...</div>
+    </div>
+    <div class="header-btns">
+      <button class="btn" id="refreshBtn" title="Refresh">↻</button>
+      <button class="btn" id="closeBtn" title="Close">✕</button>
+    </div>
+  </div>
+
+  <div id="main"></div>
+
+  <div class="footer">
+    <div class="foot-text"><span class="pulse"></span>auto · 5 min</div>
+    <div class="foot-text" id="countdown"></div>
+  </div>
+
+</div>
+
+<script>
+  let history = JSON.parse(localStorage.getItem('usageHistory') || '[]');
+  let chartMode = 'weekly';
+  let currentData = null;
+  let chart = null;
+  let nextAt = Date.now() + 5 * 60 * 1000;
+
+  function color(pct) {
+    if (pct == null) return 'var(--muted)';
+    if (pct >= 90) return 'var(--red)';
+    if (pct >= 70) return 'var(--yellow)';
+    return 'var(--green)';
+  }
+
+  function colorHex(pct) {
+    if (pct >= 90) return '#c95c5c';
+    if (pct >= 70) return '#d4a843';
+    return '#4db876';
+  }
+
+  function ago(ts) {
+    if (!ts) return '—';
+    const m = Math.floor((Date.now() - ts) / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return m + 'm ago';
+    return Math.floor(m / 60) + 'h ago';
+  }
+
+  function statHTML(label, pct, reset) {
+    const c = color(pct);
+    return `
+      <div class="stat">
+        <div class="stat-top">
+          <span class="stat-label">${label}</span>
+          <span class="stat-num" style="color:${c}">
+            ${pct != null ? pct : '—'}<span class="stat-pct">%</span>
+          </span>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${pct ?? 0}%;background:${c}"></div>
+        </div>
+        ${reset ? `<div class="stat-reset">${reset}</div>` : ''}
+      </div>`;
+  }
+
+  function render(data) {
+    const el = document.getElementById('main');
+
+    if (!data || (data.session == null && data.weekly == null)) {
+      el.innerHTML = `
+        <div class="error-wrap">
+          <div class="error-msg">${data?.error || 'Fetching usage data...'}</div>
+          ${data?.error ? '<div class="error-cmd">npm i -g @anthropic-ai/claude-code</div>' : ''}
+        </div>`;
+      chart = null;
+      return;
+    }
+
+    el.innerHTML = `
+      <div class="stats">
+        ${statHTML('Session', data.session, data.sessionReset)}
+        ${statHTML('Weekly', data.weekly, data.weeklyReset)}
+      </div>
+      <div class="sep"></div>
+      <div class="history">
+        <div class="history-head">
+          <span class="history-label">History</span>
+          <div class="toggles">
+            <button class="tog ${chartMode === 'weekly' ? 'on' : ''}" onclick="switchChart('weekly')">Week</button>
+            <button class="tog ${chartMode === 'session' ? 'on' : ''}" onclick="switchChart('session')">Session</button>
+          </div>
+        </div>
+        <canvas id="chart" height="52"></canvas>
+      </div>`;
+
+    chart = document.getElementById('chart');
+    drawChart();
+  }
+
+  function switchChart(mode) {
+    chartMode = mode;
+    document.querySelectorAll('.tog').forEach(b =>
+      b.classList.toggle('on', b.textContent.toLowerCase().startsWith(mode === 'weekly' ? 'w' : 's'))
+    );
+    drawChart();
+  }
+
+  function drawChart() {
+    if (!chart) return;
+    const ctx = chart.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const W = chart.offsetWidth || 294;
+    const H = 52;
+    chart.width = W * dpr;
+    chart.height = H * dpr;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+
+    const vals = history.slice(-40).map(p => chartMode === 'weekly' ? p.weekly : p.session);
+    const valid = vals.filter(v => v != null);
+
+    if (valid.length < 2) {
+      ctx.fillStyle = '#383838';
+      ctx.font = '10px -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Not enough data yet', W / 2, H / 2 + 4);
+      return;
+    }
+
+    const c = colorHex(valid[valid.length - 1]);
+    const pL = 2, pR = 2, pT = 4, pB = 4;
+    const cW = W - pL - pR, cH = H - pT - pB;
+    const xAt = i => pL + i * (cW / (vals.length - 1 || 1));
+    const yAt = v => pT + cH - (v / 100) * cH;
+
+    [50, 100].forEach(g => {
+      ctx.beginPath();
+      ctx.moveTo(pL, yAt(g)); ctx.lineTo(pL + cW, yAt(g));
+      ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    });
+
+    const grad = ctx.createLinearGradient(0, pT, 0, pT + cH);
+    grad.addColorStop(0, c + '40');
+    grad.addColorStop(1, c + '00');
+    ctx.beginPath();
+    vals.forEach((v, i) => {
+      const x = xAt(i), y = v != null ? yAt(v) : yAt(0);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.lineTo(xAt(vals.length - 1), pT + cH);
+    ctx.lineTo(xAt(0), pT + cH);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = c;
+    ctx.lineJoin = 'round';
+    vals.forEach((v, i) => {
+      if (v == null) return;
+      const x = xAt(i), y = yAt(v);
+      (i === 0 || vals[i - 1] == null) ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    const last = vals[vals.length - 1];
+    if (last != null) {
+      ctx.beginPath();
+      ctx.arc(xAt(vals.length - 1), yAt(last), 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = c;
+      ctx.fill();
+    }
+  }
+
+  function updateUI(data) {
+    currentData = data;
+    document.getElementById('lastUpdated').textContent = 'updated ' + ago(data?.lastUpdated);
+    render(data);
+    if (data && (data.session != null || data.weekly != null)) {
+      history.push({ ...data, timestamp: Date.now() });
+      if (history.length > 200) history.shift();
+      try { localStorage.setItem('usageHistory', JSON.stringify(history)); } catch (e) {}
+    }
+  }
+
+  setInterval(() => {
+    const rem = Math.max(0, Math.round((nextAt - Date.now()) / 1000));
+    const el = document.getElementById('countdown');
+    if (el) el.textContent = `${Math.floor(rem / 60)}:${String(rem % 60).padStart(2, '0')}`;
+    if (rem === 0) nextAt = Date.now() + 5 * 60 * 1000;
+    if (currentData) document.getElementById('lastUpdated').textContent = 'updated ' + ago(currentData.lastUpdated);
+  }, 1000);
+
+  document.getElementById('refreshBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('refreshBtn');
+    btn.classList.add('spinning');
+    const data = await window.claudeAPI.refresh();
+    btn.classList.remove('spinning');
+    nextAt = Date.now() + 5 * 60 * 1000;
+    updateUI(data);
+  });
+
+  document.getElementById('closeBtn').addEventListener('click', () => window.claudeAPI.closePopup());
+
+  window.claudeAPI.onUsageUpdate(data => {
+    updateUI(data);
+    nextAt = Date.now() + 5 * 60 * 1000;
+  });
+
+  window.claudeAPI.getUsage().then(data => updateUI(data));
+</script>
+</body>
+</html>
