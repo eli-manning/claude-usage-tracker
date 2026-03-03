@@ -70,12 +70,21 @@ def main():
                     sys.stdout.buffer.write(data)
                     sys.stdout.buffer.flush()
 
+
                     # Trigger exit as soon as we see the usage data
                     # This makes the refresh feel instant
-                    if b'% used' in buf or b'under 5% used' in buf.lower():
-                        # Give it a tiny moment to finish the current line
-                        time.sleep(0.2)
-                        break
+                    if b'% used' in buf or b'under 5%' in buf.lower():
+                        # If we have the percentage, wait until we see "Resets" OR a few more lines
+                        if b'resets' in buf.lower() or b'in ' in buf.lower():
+                            time.sleep(0.3)  # Final breath to ensure the timestamp is flushed
+                            break
+
+                        # Safety: If 1 second has passed since seeing the % but no reset line,
+                        # Claude might not be showing one. Break anyway.
+                        if (time.time() - last_pct_time) > 1.0:
+                            break
+                    else:
+                        last_pct_time = time.time() 
                 except OSError:
                     break
 

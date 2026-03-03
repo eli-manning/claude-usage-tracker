@@ -1,100 +1,89 @@
-const { app, Tray, BrowserWindow, ipcMain, nativeImage, screen } = require('electron');
-const { spawn, exec } = require('child_process');
-const path = require('path');
-const os = require('os');
-const fs = require('fs');
+const {
+  app,
+  Tray,
+  BrowserWindow,
+  ipcMain,
+  nativeImage,
+  screen,
+} = require("electron");
+const { spawn, exec } = require("child_process");
+const path = require("path");
+const os = require("os");
+const fs = require("fs");
 
-const LOG_FILE = path.join(os.homedir(), 'claude-tray-debug.log');
+const LOG_FILE = path.join(os.homedir(), "claude-tray-debug.log");
 function log(...args) {
-  const line = `[${new Date().toISOString()}] ${args.join(' ')}\n`;
+  const line = `[${new Date().toISOString()}] ${args.join(" ")}\n`;
   fs.appendFileSync(LOG_FILE, line);
 }
 
 let tray = null;
 let popupWindow = null;
-let usageData = { session: null, weekly: null, sessionReset: null, weeklyReset: null, error: null };
+let usageData = {
+  session: null,
+  weekly: null,
+  sessionReset: null,
+  weeklyReset: null,
+  error: null,
+};
 let pollInterval = null;
 let isPolling = false;
 
 // ─── Parse /usage output ────────────────────────────────────────────────────
 
 function parseUsageOutput(raw) {
-  const result = {
-    session: null,
-    weekly: null,
-    sessionReset: null,
-    weeklyReset: null,
-  };
+  const result = { session: null, weekly: null, sessionReset: null, weeklyReset: null };
 
-  // 1. Heavy cleaning: Remove ANSI/VT100 escape sequences
-  const clean = raw
-    // Replace cursor-right (e.g. \x1b[1C) with spaces to preserve word boundaries
-    // Without this, "Current\x1b[1Csession" becomes "Currentsession" and mode detection fails
-    .replace(/\x1b\[(\d*)C/g, (_, n) => ' '.repeat(Math.max(1, parseInt(n) || 1)))
-    // Strip all remaining CSI sequences, including DEC private (?-prefixed) like \x1b[?2026h
-    .replace(/\x1b\[[\x20-\x3f]*[\x40-\x7e]/g, '')
-    // Strip OSC sequences like \x1b]0;title\x07
-    .replace(/\x1b\][^\x07\x1b]*[\x07]?/g, '')
-    // Strip any leftover two-char ESC sequences
-    .replace(/\x1b./g, '')
-    // Strip box-drawing and block characters
+  // 1. THE REPAIR: Replace mid-word cursor moves (1b 5b 31 43) with a single space 
+  // to ensure words like "Resets" and "Mar" don't glue into "ResetsMar"
+  let clean = raw.replace(/\x1b\[1C/g, ' '); 
+
+  // 2. THE STRIP: Remove all other ANSI codes and UI box-drawing
+  clean = clean
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
     .replace(/[─│╭╰╮╯━┃┏┗┓┛█▌▛▜▝▞▟▐▙▚]/g, '')
     .replace(/\r/g, '\n');
 
-  log('cleaned text sample:', JSON.stringify(clean.slice(0, 500)));
-
-  // 2. Split into blocks to avoid session data bleeding into weekly data
-  const lines = clean
-    .split("\n")
-    .map((l) => l.trim())
+  // Collapse multiple spaces into one for cleaner regex matching
+  const lines = clean.split("\n")
+    .map(l => l.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
+  
+  log('Truly Cleaned Lines:', JSON.stringify(lines));
 
-  let currentBlock = null;
+  const pcts = [];
+  const resetLines = [];
 
-  for (const line of lines) {
-    // Use \s+ so cursor-right expansions (multiple spaces) don't break detection
-    if (/current\s+session/i.test(line)) {
-      currentBlock = "session";
-      continue;
-    } else if (/current\s+week/i.test(line)) {
-      currentBlock = "weekly";
-      continue;
-    } else if (/extra\s+usage/i.test(line)) {
-      currentBlock = null;
+  lines.forEach((line, index) => {
+    // Matches "88% used"
+    const pctMatch = line.match(/(\d+)%\s*used/i);
+    if (pctMatch) pcts.push({ val: parseInt(pctMatch[1]), idx: index });
+
+    // Matches "Resets" or "Reses" (Claude's mangled spelling sometimes) or time markers
+    if (/rese[st]s?|am|pm/i.test(line)) {
+      resetLines.push({ text: line, idx: index });
     }
+  });
 
-    if (currentBlock === "session") {
-      const pctMatch = line.match(/(\d+)%\s*used/i);
-      if (pctMatch) result.session = parseInt(pctMatch[1]);
-
-      const resetMatch = line.match(/Resets\s+(.+)/i);
-      if (resetMatch) result.sessionReset = "Resets " + resetMatch[1].trim();
-    }
-
-    if (currentBlock === "weekly") {
-      const pctMatch = line.match(/(\d+)%\s*used/i);
-      if (pctMatch) result.weekly = parseInt(pctMatch[1]);
-
-      const resetMatch = line.match(/Resets\s+(.+)/i);
-      if (resetMatch) result.weeklyReset = "Resets " + resetMatch[1].trim();
-    }
+  // 3. ASSIGNMENT: Map percentage to the reset immediately below it
+  if (pcts.length >= 1) {
+    result.session = pcts[0].val;
+    const sR = resetLines.find(r => r.idx > pcts[0].idx && r.idx <= pcts[0].idx + 2);
+    if (sR) result.sessionReset = sR.text;
   }
 
-  // Positional fallback: if section-based detection missed anything,
-  // treat the 1st "X% used" as session and 2nd as weekly
-  if (result.session === null || result.weekly === null) {
-    const allMatches = [...clean.matchAll(/(\d+)%\s*used/gi)];
-    if (allMatches.length >= 1 && result.session === null)
-      result.session = parseInt(allMatches[0][1]);
-    if (allMatches.length >= 2 && result.weekly === null)
-      result.weekly = parseInt(allMatches[1][1]);
+  if (pcts.length >= 2) {
+    result.weekly = pcts[1].val;
+    const wR = resetLines.find(r => r.idx > pcts[1].idx && r.idx <= pcts[1].idx + 3);
+    if (wR) result.weeklyReset = wR.text;
   }
 
-  // "Under X%" / "Under 5%" case
-  if (result.session === null && /under\s*\d*%/i.test(clean)) result.session = 0;
-  if (result.weekly === null && /under\s*\d*%/i.test(clean)) result.weekly = 0;
+  // 4. PRETTIFY: Remove the "Resets" prefix and tidy up
+  const tidy = (str) => str ? str.replace(/^rese[st]s?\s*/i, '').trim() : null;
+  result.sessionReset = tidy(result.sessionReset);
+  result.weeklyReset = tidy(result.weeklyReset);
 
-  log('parseUsageOutput result:', JSON.stringify(result));
+  log('Final Map:', JSON.stringify(result));
   return result;
 }
 
@@ -103,18 +92,18 @@ function parseUsageOutput(raw) {
 function findClaudePath() {
   // Common install locations
   const candidates = [
-    '/usr/local/bin/claude',
-    '/usr/bin/claude',
-    path.join(os.homedir(), '.local/bin/claude'),
-    path.join(os.homedir(), '.npm-global/bin/claude'),
-    '/opt/homebrew/bin/claude',
+    "/usr/local/bin/claude",
+    "/usr/bin/claude",
+    path.join(os.homedir(), ".local/bin/claude"),
+    path.join(os.homedir(), ".npm-global/bin/claude"),
+    "/opt/homebrew/bin/claude",
   ];
 
   // On Windows
-  if (process.platform === 'win32') {
+  if (process.platform === "win32") {
     candidates.push(
-      path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'claude.cmd'),
-      'claude'
+      path.join(os.homedir(), "AppData", "Roaming", "npm", "claude.cmd"),
+      "claude"
     );
   }
 
@@ -200,6 +189,17 @@ function runClaudeUsage() {
 
         // 3. Process data chunks as they arrive
         child.stdout.on("data", (data) => {
+          log("--- RAW CHUNK START ---");
+          log("STRING:", JSON.stringify(data.toString()));
+          log(
+            "HEX:",
+            data
+              .toString("hex")
+              .match(/.{1,2}/g)
+              .join(" ")
+          );
+          log("--- RAW CHUNK END ---");
+
           output += data.toString();
 
           // Attempt to parse every time we get new data
@@ -275,11 +275,15 @@ function runClaudeUsage() {
 // Generate the orange Claude-style icon with the session % drawn on it.
 // Uses the popup window's renderer canvas (no extra deps needed).
 async function generateTrayIcon(pct) {
-  if (!popupWindow || popupWindow.isDestroyed() || popupWindow.webContents.isLoading()) {
+  if (
+    !popupWindow ||
+    popupWindow.isDestroyed() ||
+    popupWindow.webContents.isLoading()
+  ) {
     return null;
   }
   try {
-    const label = JSON.stringify(pct != null ? String(pct) + "%" : '?');
+    const label = JSON.stringify(pct != null ? String(pct) + "%" : "?");
     const dataURL = await popupWindow.webContents.executeJavaScript(`
       (() => {
         const c = document.createElement('canvas');
@@ -305,9 +309,11 @@ async function generateTrayIcon(pct) {
         return c.toDataURL();
       })()
     `);
-    return nativeImage.createFromDataURL(dataURL).resize({ width: 28, height: 28 });
+    return nativeImage
+      .createFromDataURL(dataURL)
+      .resize({ width: 28, height: 28 });
   } catch (e) {
-    log('icon gen failed:', e.message);
+    log("icon gen failed:", e.message);
     return null;
   }
 }
@@ -321,27 +327,29 @@ async function updateTrayTitle() {
 
   if (error) {
     tray.setImage(nativeImage.createEmpty());
-    tray.setTitle('C !');
-    tray.setToolTip('Claude Tray: ' + error);
+    tray.setTitle("C !");
+    tray.setToolTip("Claude Tray: " + error);
     return;
   }
 
   if (sPct == null && wPct == null) {
     tray.setImage(nativeImage.createEmpty());
-    tray.setTitle('C ...');
-    tray.setToolTip('Claude Tray: fetching usage...');
+    tray.setTitle("C ...");
+    tray.setToolTip("Claude Tray: fetching usage...");
     return;
   }
 
-  tray.setToolTip(`Claude Usage — Session: ${sPct ?? '?'}%  Weekly: ${wPct ?? '?'}%`);
+  tray.setToolTip(
+    `Claude Usage — Session: ${sPct ?? "?"}%  Weekly: ${wPct ?? "?"}%`
+  );
 
   const icon = await generateTrayIcon(sPct);
   if (icon) {
     tray.setImage(icon);
-    tray.setTitle('');
+    tray.setTitle("");
   } else {
     tray.setImage(nativeImage.createEmpty());
-    tray.setTitle(`${sPct ?? '?'}s  ${wPct ?? '?'}w`);
+    tray.setTitle(`${sPct ?? "?"}s  ${wPct ?? "?"}w`);
   }
 }
 
@@ -360,19 +368,19 @@ function createPopupWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, "preload.js"),
     },
   });
 
-  popupWindow.loadFile('popup.html');
+  popupWindow.loadFile("popup.html");
 
-  popupWindow.on('blur', () => {
+  popupWindow.on("blur", () => {
     if (popupWindow && !popupWindow.isDestroyed()) {
       popupWindow.hide();
     }
   });
 
-  popupWindow.on('closed', () => {
+  popupWindow.on("closed", () => {
     popupWindow = null;
   });
 }
@@ -390,12 +398,20 @@ function togglePopup() {
   // Position near tray icon
   const trayBounds = tray.getBounds();
   const windowBounds = popupWindow.getBounds();
-  const display = screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y });
+  const display = screen.getDisplayNearestPoint({
+    x: trayBounds.x,
+    y: trayBounds.y,
+  });
 
-  let x = Math.round(trayBounds.x + trayBounds.width / 2 - windowBounds.width / 2);
+  let x = Math.round(
+    trayBounds.x + trayBounds.width / 2 - windowBounds.width / 2
+  );
   let y;
 
-  if (process.platform === 'win32' || trayBounds.y > display.bounds.height / 2) {
+  if (
+    process.platform === "win32" ||
+    trayBounds.y > display.bounds.height / 2
+  ) {
     // Taskbar at bottom - show above
     y = Math.round(trayBounds.y - windowBounds.height - 8);
   } else {
@@ -404,31 +420,42 @@ function togglePopup() {
   }
 
   // Keep within screen bounds
-  x = Math.max(display.bounds.x + 8, Math.min(x, display.bounds.x + display.bounds.width - windowBounds.width - 8));
+  x = Math.max(
+    display.bounds.x + 8,
+    Math.min(
+      x,
+      display.bounds.x + display.bounds.width - windowBounds.width - 8
+    )
+  );
 
   popupWindow.setPosition(x, y);
   popupWindow.show();
   popupWindow.focus();
-  popupWindow.webContents.send('usage-update', usageData);
+  popupWindow.webContents.send("usage-update", usageData);
 }
 
 // ─── IPC handlers ────────────────────────────────────────────────────────────
 
-ipcMain.handle('get-usage', () => usageData);
+ipcMain.handle("get-usage", () => usageData);
 
-ipcMain.handle('refresh', async () => {
+ipcMain.handle("refresh", async () => {
   const data = await runClaudeUsage();
   if (data) {
-    usageData = { session: null, weekly: null, ...data, lastUpdated: Date.now() };
+    usageData = {
+      session: null,
+      weekly: null,
+      ...data,
+      lastUpdated: Date.now(),
+    };
     await updateTrayTitle();
     if (popupWindow && !popupWindow.isDestroyed()) {
-      popupWindow.webContents.send('usage-update', usageData);
+      popupWindow.webContents.send("usage-update", usageData);
     }
   }
   return usageData;
 });
 
-ipcMain.handle('close-popup', () => {
+ipcMain.handle("close-popup", () => {
   if (popupWindow) popupWindow.hide();
 });
 
@@ -440,24 +467,29 @@ app.whenReady().then(async () => {
   // Create tray with empty icon (title will show text)
   const icon = nativeImage.createEmpty();
   tray = new Tray(icon);
-  tray.setTitle('C …');
-  tray.setToolTip('Claude Tray');
+  tray.setTitle("C …");
+  tray.setToolTip("Claude Tray");
 
-  tray.on('click', togglePopup);
-  tray.on('right-click', togglePopup);
+  tray.on("click", togglePopup);
+  tray.on("right-click", togglePopup);
 
   createPopupWindow();
 
   // Wait for the popup page to load so canvas icon generation works
-  await new Promise(resolve => {
+  await new Promise((resolve) => {
     if (!popupWindow.webContents.isLoading()) return resolve();
-    popupWindow.webContents.once('did-finish-load', resolve);
+    popupWindow.webContents.once("did-finish-load", resolve);
   });
 
   // Initial fetch
   const data = await runClaudeUsage();
   if (data) {
-    usageData = { session: null, weekly: null, ...data, lastUpdated: Date.now() };
+    usageData = {
+      session: null,
+      weekly: null,
+      ...data,
+      lastUpdated: Date.now(),
+    };
     await updateTrayTitle();
   }
 
@@ -465,19 +497,24 @@ app.whenReady().then(async () => {
   pollInterval = setInterval(async () => {
     const data = await runClaudeUsage();
     if (data) {
-      usageData = { session: null, weekly: null, ...data, lastUpdated: Date.now() };
+      usageData = {
+        session: null,
+        weekly: null,
+        ...data,
+        lastUpdated: Date.now(),
+      };
       await updateTrayTitle();
       if (popupWindow && popupWindow.isVisible()) {
-        popupWindow.webContents.send('usage-update', usageData);
+        popupWindow.webContents.send("usage-update", usageData);
       }
     }
   }, 5 * 60 * 1000);
 });
 
-app.on('window-all-closed', (e) => {
+app.on("window-all-closed", (e) => {
   e.preventDefault(); // Keep running when window closed
 });
 
-app.on('before-quit', () => {
+app.on("before-quit", () => {
   if (pollInterval) clearInterval(pollInterval);
 });
