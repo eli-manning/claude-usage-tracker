@@ -32,58 +32,54 @@ let isPolling = false;
 // ─── Parse /usage output ────────────────────────────────────────────────────
 
 function parseUsageOutput(raw) {
-  const result = { session: null, weekly: null, sessionReset: null, weeklyReset: null };
+  const result = {
+    session: null,
+    weekly: null,
+    sessionReset: null,
+    weeklyReset: null,
+  };
 
-  // 1. THE REPAIR: Replace mid-word cursor moves (1b 5b 31 43) with a single space 
-  // to ensure words like "Resets" and "Mar" don't glue into "ResetsMar"
-  let clean = raw.replace(/\x1b\[1C/g, ' '); 
+  // Repair mid-word cursor moves that turn "Resets" into "Rese s"
+  let clean = raw.replace(/\x1b\[1C/g, "");
 
-  // 2. THE STRIP: Remove all other ANSI codes and UI box-drawing
+  // Strip remaining ANSI fluff
   clean = clean
-    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
-    .replace(/[─│╭╰╮╯━┃┏┗┓┛█▌▛▜▝▞▟▐▙▚]/g, '')
-    .replace(/\r/g, '\n');
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")
+    .replace(/[─│╭╰╮╯━┃┏┗┓┛█▌▛▜▝▞▟▐▙▚]/g, "")
+    .replace(/\r/g, "\n");
 
-  // Collapse multiple spaces into one for cleaner regex matching
-  const lines = clean.split("\n")
-    .map(l => l.replace(/\s+/g, ' ').trim())
+  const lines = clean
+    .split("\n")
+    .map((l) => l.trim())
     .filter(Boolean);
-  
-  log('Truly Cleaned Lines:', JSON.stringify(lines));
 
   const pcts = [];
   const resetLines = [];
 
   lines.forEach((line, index) => {
-    // Matches "88% used"
     const pctMatch = line.match(/(\d+)%\s*used/i);
     if (pctMatch) pcts.push({ val: parseInt(pctMatch[1]), idx: index });
 
-    // Matches "Resets" or "Reses" (Claude's mangled spelling sometimes) or time markers
+    // Look for "Resets" or time markers like "pm"
     if (/rese[st]s?|am|pm/i.test(line)) {
       resetLines.push({ text: line, idx: index });
     }
   });
 
-  // 3. ASSIGNMENT: Map percentage to the reset immediately below it
+  // Assign the first percentage to the first reset line found after it
   if (pcts.length >= 1) {
     result.session = pcts[0].val;
-    const sR = resetLines.find(r => r.idx > pcts[0].idx && r.idx <= pcts[0].idx + 2);
-    if (sR) result.sessionReset = sR.text;
+    const sR = resetLines.find((r) => r.idx > pcts[0].idx);
+    if (sR) result.sessionReset = sR.text.replace(/^rese[st]s?\s*/i, "").trim();
   }
 
+  // Assign the second percentage to the reset line after that
   if (pcts.length >= 2) {
     result.weekly = pcts[1].val;
-    const wR = resetLines.find(r => r.idx > pcts[1].idx && r.idx <= pcts[1].idx + 3);
-    if (wR) result.weeklyReset = wR.text;
+    const wR = resetLines.find((r) => r.idx > pcts[1].idx);
+    if (wR) result.weeklyReset = wR.text.replace(/^rese[st]s?\s*/i, "").trim();
   }
 
-  // 4. PRETTIFY: Remove the "Resets" prefix and tidy up
-  const tidy = (str) => str ? str.replace(/^rese[st]s?\s*/i, '').trim() : null;
-  result.sessionReset = tidy(result.sessionReset);
-  result.weeklyReset = tidy(result.weeklyReset);
-
-  log('Final Map:', JSON.stringify(result));
   return result;
 }
 
@@ -188,43 +184,32 @@ function runClaudeUsage() {
         }, 16000);
 
         // 3. Process data chunks as they arrive
+        // Replace your existing child.stdout.on block in main.js
+        let accumulatedOutput = ""; // This must persist across "data" events
+
+        // Replace the block in main.js
         child.stdout.on("data", (data) => {
-          log("--- RAW CHUNK START ---");
-          log("STRING:", JSON.stringify(data.toString()));
-          log(
-            "HEX:",
-            data
-              .toString("hex")
-              .match(/.{1,2}/g)
-              .join(" ")
-          );
-          log("--- RAW CHUNK END ---");
+          accumulatedOutput += data.toString();
+          log("Accumulated length:", accumulatedOutput.length);
 
-          output += data.toString();
+          const parsed = parseUsageOutput(accumulatedOutput);
 
-          // Attempt to parse every time we get new data
-          const parsed = parseUsageOutput(output);
-
-          // If we found actual numbers, we consider it a success
-          if (
-            (parsed.session !== null || parsed.weekly !== null) &&
-            !gotUsage
-          ) {
+          // Robust check: Only resolve early if we have BOTH session AND weekly data
+          // Otherwise, let the 'close' event handle the final fallback
+          if (parsed.session !== null && parsed.weekly !== null && !gotUsage) {
             gotUsage = true;
-            log("Usage data captured successfully via stdout.");
+            log("Full usage data (Session + Weekly) captured.");
+
             clearTimeout(timeout);
             clearTimeout(doneTimeout);
             isPolling = false;
-
-            // Resolve immediately for a snappy UI
             resolve(parsed);
 
-            // Clean up the process shortly after
             setTimeout(() => {
               try {
                 child.kill();
               } catch (e) {}
-            }, 500);
+            }, 200);
           }
         });
 

@@ -66,25 +66,23 @@ def main():
                         break
 
                     buf += data
-                    # Output to stdout so Electron can capture it
                     sys.stdout.buffer.write(data)
                     sys.stdout.buffer.flush()
 
+                    # Check for completion markers
+                    has_pct = b'% used' in buf or b'under 5%' in buf.lower()
+                    has_reset = b'resets' in buf.lower() or b'in ' in buf.lower()
 
-                    # Trigger exit as soon as we see the usage data
-                    # This makes the refresh feel instant
-                    if b'% used' in buf or b'under 5%' in buf.lower():
-                        # If we have the percentage, wait until we see "Resets" OR a few more lines
-                        if b'resets' in buf.lower() or b'in ' in buf.lower():
-                            time.sleep(0.3)  # Final breath to ensure the timestamp is flushed
+                    # New Logic: Only exit early if we have BOTH the percentage AND the reset time
+                    # Or if we've seen a percentage but 1.5s have passed without a reset line
+                    if has_pct:
+                        if has_reset:
+                            time.sleep(0.1)  # Tiny buffer for last bytes
                             break
-
-                        # Safety: If 1 second has passed since seeing the % but no reset line,
-                        # Claude might not be showing one. Break anyway.
-                        if (time.time() - last_pct_time) > 1.0:
+                        elif (time.time() - last_pct_time) > 1.5:
                             break
                     else:
-                        last_pct_time = time.time() 
+                        last_pct_time = time.time()
                 except OSError:
                     break
 
