@@ -300,6 +300,15 @@
     return Math.floor(m / 60) + 'h ago';
   }
 
+  function formatReset(s) {
+    if (!s) return s;
+    return s
+      .replace(/\s*\([^)]*\)/g, '')   // remove "(America/Los_Angeles)" etc.
+      .replace(/([A-Za-z])(\d)/g, '$1 $2')  // "Mar5" → "Mar 5"
+      .replace(/,(\S)/g, ', $1')       // "Mar 5,8pm" → "Mar 5, 8pm"
+      .trim();
+  }
+
   function statHTML(label, pct, reset) {
     const c = color(pct);
     return `
@@ -313,7 +322,7 @@
         <div class="bar-track">
           <div class="bar-fill" style="width:${pct ?? 0}%;background:${c}"></div>
         </div>
-        ${reset ? `<div class="stat-reset">${reset}</div>` : ''}
+        ${reset ? `<div class="stat-reset">${formatReset(reset)}</div>` : ''}
       </div>`;
   }
 
