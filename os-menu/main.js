@@ -154,7 +154,9 @@ function runClaudeUsage() {
 
         log("claudePath resolved:", claudePath);
 
-        const ptyWrapper = path.join(__dirname, "pty-wrapper.py");
+        const ptyWrapper = app.isPackaged
+          ? path.join(process.resourcesPath, "pty-wrapper.py")
+          : path.join(__dirname, "pty-wrapper.py");
         let spawnExe, spawnArgs;
 
         if (process.platform === "win32") {
@@ -224,15 +226,16 @@ function runClaudeUsage() {
           clearTimeout(doneTimeout);
           isPolling = false;
           log("child closed, code:", code, "gotUsage:", gotUsage);
+          log("raw accumulated output:", JSON.stringify(accumulatedOutput.slice(0, 500)));
 
           if (!gotUsage) {
-            const finalParsed = parseUsageOutput(output);
+            const finalParsed = parseUsageOutput(accumulatedOutput);
             if (finalParsed.session !== null || finalParsed.weekly !== null) {
               resolve(finalParsed);
             } else {
               // Check if user needs to log in
               const isAuthError =
-                output.includes("login") || output.includes("authenticated");
+                accumulatedOutput.includes("login") || accumulatedOutput.includes("authenticated");
               const errorMsg = isAuthError
                 ? 'Please run "claude" in terminal to login.'
                 : "Could not find usage numbers in output.";
@@ -356,6 +359,10 @@ function createPopupWindow() {
       preload: path.join(__dirname, "preload.js"),
     },
   });
+
+  // Keep popup on the active Space so clicking the tray icon never switches desktops
+  popupWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  popupWindow.setAlwaysOnTop(true, "floating");
 
   popupWindow.loadFile("popup.html");
 

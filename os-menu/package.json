@@ -12,6 +12,9 @@
   "build": {
     "appId": "com.eli.claude-tray",
     "productName": "Claude Tray",
+    "extraResources": [
+      { "from": "pty-wrapper.py", "to": "pty-wrapper.py" }
+    ],
     "mac": {
       "category": "public.app-category.utilities",
       "target": ["dmg", "zip"]

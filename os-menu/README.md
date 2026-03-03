@@ -41,6 +41,27 @@ npm run build:win    # → dist/Claude Tray Setup.exe
 npm run build:linux  # → dist/Claude Tray.AppImage
 ```
 
+### One-time setup before first use
+
+When launched from Finder / Start Menu / desktop, the app runs from a system directory that Claude Code considers untrusted. You need to trust it once in a terminal so the app can fetch usage data on every future launch.
+
+**macOS / Linux:**
+```bash
+cd / && claude /usage
+```
+
+**Windows (Command Prompt):**
+```cmd
+cd %USERPROFILE% && claude /usage
+```
+
+**Windows (PowerShell):**
+```powershell
+cd $env:USERPROFILE && claude /usage
+```
+
+Press **Enter** (or Y + Enter) at the "Quick safety check" prompt. Claude Code will remember the answer permanently.
+
 ## Auto-launch on login (macOS)
 
 1. Build and move `Claude Tray.app` to `/Applications`
@@ -60,6 +81,8 @@ No network requests are made and no API keys are required — everything reads f
 Run `which claude` to check. If missing: `npm i -g @anthropic-ai/claude-code`
 
 **Stuck on "fetching…"** — open a terminal and run `claude /usage` manually to confirm you're authenticated and it returns output.
+
+**Stuck on "fetching…" only in the installed app (not `npm start`)** — Claude Code is showing a directory trust prompt. Run the one-time setup command for your platform (see above under "Build a standalone app") and press Enter at the prompt. This only needs to be done once.
 
 **macOS: permission error on first launch** — macOS may block the app since it isn't notarized. Go to System Settings → Privacy & Security → scroll down and click "Open Anyway".
 

@@ -50,6 +50,8 @@ def main():
     buf = b''
     start_time = time.time()
     timeout = 10  # Maximum seconds to wait
+    last_pct_time = time.time()
+    trust_answered = False
 
     try:
         while True:
@@ -69,11 +71,21 @@ def main():
                     sys.stdout.buffer.write(data)
                     sys.stdout.buffer.flush()
 
+                    # Auto-answer Claude's directory trust prompt
+                    # "safety check" has ANSI sequences between words so match on "safety" alone
+                    if not trust_answered and b'safety' in buf.lower():
+                        trust_answered = True
+                        time.sleep(0.1)
+                        try:
+                            os.write(master, b'\r')
+                        except OSError:
+                            pass
+
                     # Check for completion markers
                     has_pct = b'% used' in buf or b'under 5%' in buf.lower()
                     has_reset = b'resets' in buf.lower() or b'in ' in buf.lower()
 
-                    # New Logic: Only exit early if we have BOTH the percentage AND the reset time
+                    # Only exit early if we have BOTH the percentage AND the reset time
                     # Or if we've seen a percentage but 1.5s have passed without a reset line
                     if has_pct:
                         if has_reset:

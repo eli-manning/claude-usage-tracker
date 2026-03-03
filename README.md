@@ -15,6 +15,23 @@ npm install
 npm start
 ```
 
+**Build a standalone app:**
+```bash
+npm run build:mac    # → dist/Claude Tray.dmg
+npm run build:win    # → dist/Claude Tray Setup.exe
+npm run build:linux  # → dist/Claude Tray.AppImage
+```
+
+**One-time setup required after installing the built app** — trust the working directory so Claude Code doesn't prompt:
+
+| Platform | Command |
+|---|---|
+| macOS / Linux | `cd / && claude /usage` |
+| Windows (cmd) | `cd %USERPROFILE% && claude /usage` |
+| Windows (PowerShell) | `cd $env:USERPROFILE && claude /usage` |
+
+Press Enter at the "Quick safety check" prompt. Only needed once.
+
 → [Full setup & details](os-menu/README.md)
 
 ---
