@@ -1,42 +1,43 @@
-# Claude Usage Tracker — Chrome Extension
+# Claude Usage Tracker
 
-Track and visualize your Claude.ai usage over time, with history the native settings page doesn't show you.
+Two tools for keeping an eye on your Claude usage limits.
 
-## Features
+---
 
-- **Session & Weekly usage** displayed as live gauges
-- **Usage history chart** — see how your usage changes over time
-- **Badge icon** on the toolbar showing your current weekly % at a glance
-- **Alerts** when you cross 75%, 90%, or 100% of either limit
-- **Auto-refresh** every 30 minutes in the background
+## Menu Bar / Tray App — `os-menu/` ✓ Active
 
-## Installation
+Tracks usage for **Claude Code** (the CLI). Lives in your macOS menu bar or Windows/Linux system tray. Runs `claude /usage` in the background every 5 minutes — no browser, no API key needed.
 
-Since this is an unpacked extension (not on the Chrome Web Store), you load it manually:
+**Quick start:**
+```bash
+cd os-menu
+npm install
+npm start
+```
 
-1. Open Chrome and go to `chrome://extensions`
-2. Enable **Developer mode** (toggle in top right)
-3. Click **Load unpacked**
-4. Select the `claude-usage-tracker` folder
+**Build a standalone app:**
+```bash
+npm run build:mac    # → dist/Claude Tray.dmg
+npm run build:win    # → dist/Claude Tray Setup.exe
+npm run build:linux  # → dist/Claude Tray.AppImage
+```
 
-That's it! The extension will open the Claude settings page briefly in the background to get your initial data.
+**One-time setup required after installing the built app** — trust the working directory so Claude Code doesn't prompt:
 
-## How It Works
+| Platform | Command |
+|---|---|
+| macOS / Linux | `cd / && claude /usage` |
+| Windows (cmd) | `cd %USERPROFILE% && claude /usage` |
+| Windows (PowerShell) | `cd $env:USERPROFILE && claude /usage` |
 
-- A **content script** runs on `claude.ai/settings/usage` and scrapes your usage percentages
-- Data is saved to **Chrome local storage** — nothing leaves your browser
-- A **background service worker** triggers a refresh every 30 minutes by briefly opening the settings page in a background tab (it auto-closes after 10 seconds)
-- You can also manually refresh by clicking the ↻ button in the popup
+Press Enter at the "Quick safety check" prompt. Only needed once.
 
-## Permissions Used
+→ [Full setup & details](os-menu/README.md)
 
-- `storage` — save usage history locally
-- `alarms` — schedule periodic refresh
-- `tabs` — open/close the settings page for scraping
-- `scripting` — inject content script
-- `notifications` — usage threshold alerts
-- `https://claude.ai/*` — access the settings page
+---
 
-## Privacy
+## Chrome Extension — `chrome-extension/` ⚠️ Deprecated
 
-All data stays in your browser. Nothing is sent anywhere.
+~~Tracked usage on **Claude.ai** (the web app).~~ Anthropic removed usage data from `claude.ai/settings/usage`, so this extension no longer works. Kept here for reference only.
+
+→ [Details](chrome-extension/README.md)
