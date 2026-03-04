@@ -121,21 +121,28 @@ function runClaudeUsage() {
       });
     }, 15000);
 
-    const extraPaths = [
-      "/opt/homebrew/bin",
-      "/usr/local/bin",
-      path.join(os.homedir(), ".npm-global/bin"),
-      path.join(os.homedir(), ".local/bin"),
-    ].join(":");
+    const isWin = process.platform === "win32";
+    const pathSep = isWin ? ";" : ":";
+    const extraPaths = isWin
+      ? [
+          path.join(os.homedir(), "AppData", "Roaming", "npm"),
+        ]
+      : [
+          "/opt/homebrew/bin",
+          "/usr/local/bin",
+          path.join(os.homedir(), ".npm-global/bin"),
+          path.join(os.homedir(), ".local/bin"),
+        ];
 
     const augmentedEnv = {
       ...process.env,
-      PATH: `${extraPaths}:${process.env.PATH || ""}`,
+      PATH: `${extraPaths.join(pathSep)}${pathSep}${process.env.PATH || ""}`,
     };
 
     // 1. Resolve the path to Claude
+    const whichCmd = isWin ? "where claude" : "which claude";
     exec(
-      "which claude || where claude",
+      whichCmd,
       { env: augmentedEnv },
       (err, stdout) => {
         const fromWhich = (stdout || "").trim().split("\n")[0];
@@ -159,7 +166,7 @@ function runClaudeUsage() {
           : path.join(__dirname, "pty-wrapper.py");
         let spawnExe, spawnArgs;
 
-        if (process.platform === "win32") {
+        if (isWin) {
           spawnExe = claudePath;
           spawnArgs = ["/usage"]; // Direct argument for Windows
         } else {
@@ -175,7 +182,7 @@ function runClaudeUsage() {
             FORCE_COLOR: "0",
             CLAUDE_CODE_DISABLE_ANIMATIONS: "true", // Strips TUI fluff
           },
-          shell: false,
+          shell: isWin, // .cmd files require shell:true on Windows
         });
 
         let output = "";
