@@ -370,19 +370,34 @@ async function generateTrayIcon(pct) {
     return null;
   }
   try {
+    // Determine the physical pixel size the icon should fill.
+    // On Mac: 28px (14pt @2x Retina) fills the menu bar.
+    // On Windows: read the actual tray bounds in logical pixels, then
+    //   multiply by scaleFactor to get physical pixels. The slot is
+    //   square-constrained by its narrower dimension (width on a bottom taskbar).
+    let targetSize = 28;
+    if (process.platform === "win32" && tray) {
+      const bounds = tray.getBounds();
+      const scale = screen.getPrimaryDisplay().scaleFactor;
+      targetSize = Math.round(Math.min(bounds.width, bounds.height) * scale);
+    }
+    // Draw at 2× target for crisp rendering, then resize down.
+    const sz = targetSize * 2;
+
     const label = JSON.stringify(pct != null ? String(pct) + "%" : "?");
     const dataURL = await popupWindow.webContents.executeJavaScript(`
       (() => {
         const c = document.createElement('canvas');
-        c.width = c.height = 56;
+        const sz = ${sz};
+        c.width = c.height = sz;
         const ctx = c.getContext('2d');
         // Orange rounded-rect background (Claude brand color)
-        const r = 11;
+        const r = Math.round(sz * 11 / 56);
         ctx.beginPath();
-        ctx.moveTo(r, 0); ctx.lineTo(56-r, 0);
-        ctx.arcTo(56, 0, 56, r, r); ctx.lineTo(56, 56-r);
-        ctx.arcTo(56, 56, 56-r, 56, r); ctx.lineTo(r, 56);
-        ctx.arcTo(0, 56, 0, 56-r, r); ctx.lineTo(0, r);
+        ctx.moveTo(r, 0); ctx.lineTo(sz-r, 0);
+        ctx.arcTo(sz, 0, sz, r, r); ctx.lineTo(sz, sz-r);
+        ctx.arcTo(sz, sz, sz-r, sz, r); ctx.lineTo(r, sz);
+        ctx.arcTo(0, sz, 0, sz-r, r); ctx.lineTo(0, r);
         ctx.arcTo(0, 0, r, 0, r); ctx.closePath();
         ctx.fillStyle = '#CC785C';
         ctx.fill();
@@ -391,18 +406,12 @@ async function generateTrayIcon(pct) {
         ctx.fillStyle = 'white';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = 'bold ' + (text.length > 2 ? '19' : '24') + 'px -apple-system, sans-serif';
-        ctx.fillText(text, 28, 29);
+        const fs = text.length > 2 ? Math.round(sz * 19 / 56) : Math.round(sz * 24 / 56);
+        ctx.font = 'bold ' + fs + 'px -apple-system, sans-serif';
+        ctx.fillText(text, sz / 2, sz / 2 + 1);
         return c.toDataURL();
       })()
     `);
-    // On Windows the notification-area slot is 16 logical px; multiply by
-    // scaleFactor to get the physical pixel size that fills it exactly.
-    // On Mac, 28px (14pt @2x Retina) matches the menu bar height.
-    const targetSize =
-      process.platform === "win32"
-        ? Math.round(16 * screen.getPrimaryDisplay().scaleFactor)
-        : 28;
     return nativeImage
       .createFromDataURL(dataURL)
       .resize({ width: targetSize, height: targetSize });
