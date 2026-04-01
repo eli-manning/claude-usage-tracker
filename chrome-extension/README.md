@@ -1,9 +1,5 @@
 # Claude Usage Tracker — Chrome Extension
 
-> **Deprecated** — Anthropic removed usage data from `claude.ai/settings/usage`, so this extension no longer has a page to scrape. It is kept here for reference but is not actively maintained. For Claude Code CLI usage tracking, see the [menu bar app](../os-menu/README.md) instead.
-
----
-
 Track and visualize your Claude.ai usage over time, with history the native settings page doesn't show you.
 
 ## Features

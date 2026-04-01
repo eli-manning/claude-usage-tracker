@@ -206,6 +206,7 @@ function runClaudeUsage() {
             name: "xterm",
             cols: 120,
             rows: 30,
+            cwd: os.homedir(),
             env: {
               ...augmentedEnv,
               TERM: "xterm",
@@ -216,6 +217,7 @@ function runClaudeUsage() {
 
           let accumulatedOutput = "";
           let gotUsage = false;
+          let trustAccepted = false;
           const doneTimeout = setTimeout(() => {
             try { ptyProc.kill(); } catch (e) {}
           }, 16000);
@@ -223,6 +225,14 @@ function runClaudeUsage() {
           ptyProc.onData((data) => {
             accumulatedOutput += data;
             log("PTY accumulated length:", accumulatedOutput.length);
+            // Auto-accept the "trust this directory?" prompt that Claude shows
+            // when launched from an unfamiliar working directory.
+            // The prompt has ANSI escape codes between words, so check for
+            // individual literal words rather than the full phrase.
+            if (!trustAccepted && accumulatedOutput.includes("Accessing") && accumulatedOutput.includes("workspace:")) {
+              trustAccepted = true;
+              ptyProc.write("\r");
+            }
             const parsed = parseUsageOutput(accumulatedOutput);
             if (parsed.session !== null && parsed.weekly !== null && !gotUsage) {
               gotUsage = true;
@@ -376,10 +386,18 @@ async function generateTrayIcon(pct) {
     //   multiply by scaleFactor to get physical pixels. The slot is
     //   square-constrained by its narrower dimension (width on a bottom taskbar).
     let targetSize = 28;
-    if (process.platform === "win32" && tray) {
-      const bounds = tray.getBounds();
-      const scale = screen.getPrimaryDisplay().scaleFactor;
-      targetSize = Math.round(Math.min(bounds.width, bounds.height) * scale);
+    if (process.platform === "win32") {
+      // Use taskbar height to fill the maximum available tray icon space.
+      // getBounds() only returns the current icon slot (often 16px), so instead
+      // we derive the height from the taskbar: display.bounds.height - workArea.height.
+      const display = tray
+        ? screen.getDisplayNearestPoint({ x: tray.getBounds().x, y: tray.getBounds().y })
+        : screen.getPrimaryDisplay();
+      const scale = display.scaleFactor;
+      const taskbarLogicalH = display.bounds.height - display.workArea.height;
+      // Leave 4px total padding; minimum 16px logical.
+      const logicalSize = Math.max(16, taskbarLogicalH - 4);
+      targetSize = Math.round(logicalSize * scale);
     }
     // Draw at 2× target for crisp rendering, then resize down.
     const sz = targetSize * 2;
@@ -479,7 +497,7 @@ function createPopupWindow() {
   popupWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   popupWindow.setAlwaysOnTop(true, "floating");
 
-  popupWindow.loadFile("popup.html");
+  popupWindow.loadFile(path.join(__dirname, "popup.html"));
 
   popupWindow.on("blur", () => {
     if (popupWindow && !popupWindow.isDestroyed()) {
