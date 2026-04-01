@@ -396,9 +396,16 @@ async function generateTrayIcon(pct) {
         return c.toDataURL();
       })()
     `);
+    // On Windows the notification-area slot is 16 logical px; multiply by
+    // scaleFactor to get the physical pixel size that fills it exactly.
+    // On Mac, 28px (14pt @2x Retina) matches the menu bar height.
+    const targetSize =
+      process.platform === "win32"
+        ? Math.round(16 * screen.getPrimaryDisplay().scaleFactor)
+        : 28;
     return nativeImage
       .createFromDataURL(dataURL)
-      .resize({ width: 28, height: 28 });
+      .resize({ width: targetSize, height: targetSize });
   } catch (e) {
     log("icon gen failed:", e.message);
     return null;
