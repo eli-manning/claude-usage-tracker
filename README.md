@@ -2,13 +2,20 @@
 
 Two tools for monitoring your Claude usage limits.
 
-![Platform support](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue)
-
 ---
 
 ## Tray App — `os-menu/`
 
-A menu bar / system tray app for **Claude Code** (the CLI). Lives in your macOS menu bar or Windows/Linux system tray and shows live session and weekly usage percentages without opening a browser.
+A menu bar / system tray app for **Claude Code** (the CLI). Lives in your macOS menu bar or Windows system tray and shows live session and weekly usage percentages without opening a browser.
+
+**Download:**
+
+| Platform | Link |
+|----------|------|
+| macOS (Apple Silicon) | [Claude Tray.dmg](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray-1.0.0-arm64.dmg) |
+| Windows | [Claude Tray Setup.exe](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray.Setup.1.0.0.exe) |
+
+Requires [Claude Code](https://docs.anthropic.ai/claude-code) installed and authenticated.
 
 **Features:**
 - Orange tray icon showing your current session % at all times
@@ -19,26 +26,7 @@ A menu bar / system tray app for **Claude Code** (the CLI). Lives in your macOS 
 
 **Privacy:** Everything runs locally. The app calls `claude /usage` on your machine — no API calls, no secrets, no network traffic beyond what Claude Code itself does. Usage percentages are stored in `localStorage` for the history chart only. Nothing leaves your machine.
 
-### Quick start
-
-```bash
-cd os-menu
-npm install
-npm start
-```
-
-### Build a standalone app
-
-```bash
-cd os-menu
-npm run build:mac    # → dist/Claude Tray.dmg
-npm run build:win    # → dist/Claude Tray Setup 1.0.0.exe
-npm run build:linux  # → dist/Claude Tray.AppImage
-```
-
-Run the output installer for your platform — it installs and launches the app automatically.
-
-→ [Full setup, install instructions, and troubleshooting](os-menu/README.md)
+→ [Full install instructions and troubleshooting](os-menu/README.md)
 
 ---
 
@@ -61,7 +49,7 @@ A Chrome extension for **Claude.ai** (the web app). Shows session and weekly usa
 **Tray app:**
 - [Claude Code](https://docs.anthropic.ai/claude-code) installed and authenticated: `npm i -g @anthropic-ai/claude-code`
 - Node.js v18+
-- Python 3 (macOS / Linux only)
+- Python 3 (macOS only)
 
 **Chrome extension:**
 - Google Chrome or any Chromium-based browser

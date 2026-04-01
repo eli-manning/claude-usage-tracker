@@ -2,15 +2,12 @@
 
 Menu bar / system tray app that shows your [Claude Code](https://claude.ai/code) usage at a glance — no browser, no API key required.
 
-![tray icon with popup showing session and weekly usage]()
-
 ## Download
 
 | Platform | Link |
 |----------|------|
 | macOS (Apple Silicon) | [Claude Tray.dmg](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray-1.0.0-arm64.dmg) |
 | Windows | [Claude Tray Setup.exe](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray.Setup.1.0.0.exe) |
-| Linux | [Claude Tray.AppImage](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray.AppImage) |
 
 **Requires [Claude Code](https://docs.anthropic.ai/claude-code) to be installed and authenticated.**
 
@@ -27,11 +24,6 @@ Menu bar / system tray app that shows your [Claude Code](https://claude.ai/code)
 
 ### Windows
 Run the installer — it installs for your user account (no admin required) and launches automatically. The icon appears in the system tray (bottom-right). If it's hidden, click **^** to find it and drag it to the visible area.
-
-### Linux
-```bash
-chmod +x "Claude Tray.AppImage" && "./Claude Tray.AppImage"
-```
 
 ---
 
@@ -52,14 +44,14 @@ Everything runs locally. The app calls `claude /usage` on your machine — no ne
 ## Troubleshooting
 
 **Blank tray icon / "Could not run claude"**
-`claude` isn't on your PATH. Run `which claude` (macOS/Linux) or `where claude` (Windows). If missing: `npm i -g @anthropic-ai/claude-code`
+`claude` isn't on your PATH. Run `which claude` (macOS) or `where claude` (Windows). If missing: `npm i -g @anthropic-ai/claude-code`
 
 **Stuck on "fetching…"**
 Open a terminal and run `claude /usage` to confirm you're authenticated. If it prompts for login, complete that first.
 
 **Stuck on "fetching…" only in the installed app**
 Claude Code is showing a directory trust prompt. Run this once in a terminal:
-- **macOS/Linux:** `cd ~ && claude /usage` → press **Enter** at the prompt
+- **macOS:** `cd ~ && claude /usage` → press **Enter** at the prompt
 - **Windows:** `cd %USERPROFILE% && claude /usage` → press **Enter**
 
 **Session expired**
