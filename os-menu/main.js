@@ -13,6 +13,7 @@ const fs = require("fs");
 
 const LOG_FILE = path.join(os.homedir(), "claude-tray-debug.log");
 function log(...args) {
+  if (app.isPackaged) return;
   const line = `[${new Date().toISOString()}] ${args.join(" ")}\n`;
   fs.appendFileSync(LOG_FILE, line);
 }
