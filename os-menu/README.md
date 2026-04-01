@@ -17,6 +17,7 @@ Menu bar / system tray app that shows your Claude Code CLI usage at a glance —
 
 - **Node.js** v18+
 - **Python 3** (macOS / Linux only — used to run the PTY wrapper)
+- **node-pty** (Windows only — installed automatically via `npm install`)
 - **Claude Code** installed and authenticated:
   ```bash
   npm i -g @anthropic-ai/claude-code
@@ -71,7 +72,7 @@ Press **Enter** (or Y + Enter) at the "Quick safety check" prompt. Claude Code w
 
 On macOS and Linux, the app uses a Python PTY wrapper (`pty-wrapper.py`) to spawn `claude /usage` inside a pseudo-terminal — this is needed because Claude Code requires a TTY to run. The wrapper streams output back to the Electron main process, which parses the session and weekly percentages out of the ANSI-formatted output.
 
-On Windows, `claude /usage` is called directly since a PTY wrapper isn't needed.
+On Windows, the app uses [`node-pty`](https://github.com/microsoft/node-pty) to create a Windows ConPTY (Console Pseudoconsole), which gives Claude Code the real terminal environment it needs. Without a ConPTY, Claude interprets `/usage` as an unknown slash command rather than its built-in usage display.
 
 No network requests are made and no API keys are required — everything reads from your existing authenticated Claude Code session.
 

@@ -13,22 +13,36 @@
     "appId": "com.eli.claude-tray",
     "productName": "Claude Tray",
     "extraResources": [
-      { "from": "pty-wrapper.py", "to": "pty-wrapper.py" }
+      {
+        "from": "pty-wrapper.py",
+        "to": "pty-wrapper.py"
+      }
     ],
     "mac": {
       "category": "public.app-category.utilities",
-      "target": ["dmg", "zip"]
+      "target": [
+        "dmg",
+        "zip"
+      ]
     },
     "win": {
-      "target": ["nsis"]
+      "target": [
+        "nsis"
+      ]
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "category": "Utility"
     }
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
     "electron": "^29.0.0",
     "electron-builder": "^24.0.0"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0"
   }
 }

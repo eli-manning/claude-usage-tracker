@@ -39,6 +39,11 @@ function parseUsageOutput(raw) {
     weeklyReset: null,
   };
 
+  // On Windows (ConPTY), the TUI positions each row with \x1b[N;MH instead of \r\n.
+  // Insert a newline before each absolute cursor-position sequence so the
+  // line-based parser below can find session and weekly values on separate lines.
+  raw = raw.replace(/\x1b\[\d+;\d*[Hf]/g, "\n");
+
   // Repair mid-word cursor moves that corrupt words.
   // \x1b[1C (cursor forward) splits words like "Resets" → "Rese s"; strip it.
   // \x1b[Na (cursor up) ends in 'a', which the general ANSI strip eats, turning "9am" → "9m"; preserve the 'a'.
@@ -165,28 +170,113 @@ function runClaudeUsage() {
 
         log("claudePath resolved:", claudePath);
 
+        // ── Windows: use node-pty (ConPTY) ───────────────────────────────────
+        if (isWin) {
+          // node-pty gives Claude a real Windows console (ConPTY) so the TUI
+          // starts up and /usage is processed as a built-in command instead of
+          // being treated as an unknown skill.
+          let nodePty;
+          try {
+            nodePty = require("node-pty");
+          } catch (e) {
+            log("node-pty load failed:", e.message);
+            clearTimeout(timeout);
+            isPolling = false;
+            return resolve({
+              session: null,
+              weekly: null,
+              error: "node-pty unavailable. Run: npm install",
+            });
+          }
+
+          // where claude returns the POSIX shell-script variant first on Windows;
+          // node-pty needs the .cmd batch file to actually launch claude.
+          // Also strip any trailing \r that exec() may leave on Windows line endings.
+          const cleanPath = claudePath.replace(/[\r\n]+$/, "");
+          const claudeCmd =
+            !cleanPath.toLowerCase().endsWith(".cmd") &&
+            !cleanPath.toLowerCase().endsWith(".exe") &&
+            fs.existsSync(cleanPath + ".cmd")
+              ? cleanPath + ".cmd"
+              : cleanPath;
+
+          log("Windows ConPTY spawning:", claudeCmd);
+
+          const ptyProc = nodePty.spawn(claudeCmd, ["/usage"], {
+            name: "xterm",
+            cols: 120,
+            rows: 30,
+            env: {
+              ...augmentedEnv,
+              TERM: "xterm",
+              FORCE_COLOR: "0",
+              CLAUDE_CODE_DISABLE_ANIMATIONS: "true",
+            },
+          });
+
+          let accumulatedOutput = "";
+          let gotUsage = false;
+          const doneTimeout = setTimeout(() => {
+            try { ptyProc.kill(); } catch (e) {}
+          }, 16000);
+
+          ptyProc.onData((data) => {
+            accumulatedOutput += data;
+            log("PTY accumulated length:", accumulatedOutput.length);
+            const parsed = parseUsageOutput(accumulatedOutput);
+            if (parsed.session !== null && parsed.weekly !== null && !gotUsage) {
+              gotUsage = true;
+              log("PTY: full usage data captured");
+              clearTimeout(timeout);
+              clearTimeout(doneTimeout);
+              isPolling = false;
+              resolve(parsed);
+              setTimeout(() => { try { ptyProc.kill(); } catch (e) {} }, 200);
+            }
+          });
+
+          ptyProc.onExit(() => {
+            clearTimeout(timeout);
+            clearTimeout(doneTimeout);
+            isPolling = false;
+            log("PTY closed, gotUsage:", gotUsage);
+            log("PTY raw output:", JSON.stringify(accumulatedOutput.slice(0, 3000)));
+            log("PTY parsed:", JSON.stringify(parseUsageOutput(accumulatedOutput)));
+            if (!gotUsage) {
+              const finalParsed = parseUsageOutput(accumulatedOutput);
+              if (finalParsed.session !== null || finalParsed.weekly !== null) {
+                resolve(finalParsed);
+              } else {
+                const isAuthError =
+                  accumulatedOutput.includes("login") ||
+                  accumulatedOutput.includes("authenticated");
+                resolve({
+                  session: null,
+                  weekly: null,
+                  error: isAuthError
+                    ? 'Please run "claude" in terminal to login.'
+                    : "Could not find usage numbers in output.",
+                });
+              }
+            }
+          });
+
+          return; // Resolution handled by pty callbacks above
+        }
+        // ── End Windows ConPTY path ───────────────────────────────────────────
+
+        // 2. Mac/Linux: spawn via python3 pty-wrapper
         const ptyWrapper = app.isPackaged
           ? path.join(process.resourcesPath, "pty-wrapper.py")
           : path.join(__dirname, "pty-wrapper.py");
-        let spawnExe, spawnArgs;
 
-        if (isWin) {
-          spawnExe = claudePath;
-          spawnArgs = ["/usage"]; // Direct argument for Windows
-        } else {
-          spawnExe = "python3";
-          spawnArgs = [ptyWrapper, claudePath];
-        }
-
-        // 2. Spawn the PTY wrapper
-        const child = spawn(spawnExe, spawnArgs, {
+        const child = spawn("python3", [ptyWrapper, claudePath], {
           env: {
             ...augmentedEnv,
             TERM: "dumb", // Essential for consistent parsing
             FORCE_COLOR: "0",
             CLAUDE_CODE_DISABLE_ANIMATIONS: "true", // Strips TUI fluff
           },
-          shell: isWin, // .cmd files require shell:true on Windows
         });
 
         let output = "";
@@ -196,11 +286,8 @@ function runClaudeUsage() {
           if (child) child.kill();
         }, 16000);
 
-        // 3. Process data chunks as they arrive
-        // Replace your existing child.stdout.on block in main.js
         let accumulatedOutput = ""; // This must persist across "data" events
 
-        // Replace the block in main.js
         child.stdout.on("data", (data) => {
           accumulatedOutput += data.toString();
           log("Accumulated length:", accumulatedOutput.length);
@@ -231,7 +318,7 @@ function runClaudeUsage() {
           log("stderr chunk:", data.toString().slice(0, 100));
         });
 
-        // 4. Fallback: Parse one last time when the process closes
+        // 3. Fallback: Parse one last time when the process closes
         child.on("close", (code) => {
           clearTimeout(timeout);
           clearTimeout(doneTimeout);
