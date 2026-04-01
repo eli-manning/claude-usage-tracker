@@ -39,8 +39,12 @@ function parseUsageOutput(raw) {
     weeklyReset: null,
   };
 
-  // Repair mid-word cursor moves that turn "Resets" into "Rese s"
-  let clean = raw.replace(/\x1b\[1C/g, "");
+  // Repair mid-word cursor moves that corrupt words.
+  // \x1b[1C (cursor forward) splits words like "Resets" → "Rese s"; strip it.
+  // \x1b[Na (cursor up) ends in 'a', which the general ANSI strip eats, turning "9am" → "9m"; preserve the 'a'.
+  let clean = raw
+    .replace(/\x1b\[1C/g, "")
+    .replace(/\x1b\[[0-9;?]*a/g, "a");
 
   // Strip remaining ANSI fluff
   clean = clean
@@ -233,7 +237,8 @@ function runClaudeUsage() {
           clearTimeout(doneTimeout);
           isPolling = false;
           log("child closed, code:", code, "gotUsage:", gotUsage);
-          log("raw accumulated output:", JSON.stringify(accumulatedOutput.slice(0, 500)));
+          log("raw accumulated output:", JSON.stringify(accumulatedOutput.slice(0, 3000)));
+          log("parsed result:", JSON.stringify(parseUsageOutput(accumulatedOutput)));
 
           if (!gotUsage) {
             const finalParsed = parseUsageOutput(accumulatedOutput);
