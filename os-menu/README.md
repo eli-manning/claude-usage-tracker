@@ -6,8 +6,8 @@ Menu bar / system tray app that shows your [Claude Code](https://claude.ai/code)
 
 | Platform | Link |
 |----------|------|
-| macOS (Apple Silicon) | [Claude Tray.dmg](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray-1.0.0-arm64.dmg) |
-| Windows | [Claude Tray Setup.exe](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray.Setup.1.0.0.exe) |
+| macOS (Apple Silicon) | [Claude Tray.dmg](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray-1.0.1-arm64.dmg) |
+| Windows | [Claude Tray Setup.exe](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray.Setup.1.0.1.exe) |
 
 **Requires [Claude Code](https://docs.anthropic.ai/claude-code) to be installed and authenticated.**
 
@@ -73,6 +73,6 @@ npm start
 To build a distributable:
 ```bash
 npm run build:mac    # → dist/Claude Tray.dmg
-npm run build:win    # → dist/Claude Tray Setup 1.0.0.exe
+npm run build:win    # → dist/Claude Tray Setup 1.0.1.exe
 npm run build:linux  # → dist/Claude Tray.AppImage
 ```
