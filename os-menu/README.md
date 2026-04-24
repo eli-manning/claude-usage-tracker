@@ -6,8 +6,8 @@ Menu bar / system tray app that shows your [Claude Code](https://claude.ai/code)
 
 | Platform | Link |
 |----------|------|
-| macOS (Apple Silicon) | [Claude Tray.dmg](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray-1.0.1-arm64.dmg) |
-| Windows | [Claude Tray Setup.exe](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray.Setup.1.0.1.exe) |
+| macOS (Apple Silicon) | [Claude Tray.dmg](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray-1.0.2-arm64.dmg) |
+| Windows | [Claude Tray Setup.exe](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray.Setup.1.0.2.exe) |
 
 **Requires [Claude Code](https://docs.anthropic.ai/claude-code) to be installed and authenticated.**
 
@@ -20,7 +20,11 @@ Menu bar / system tray app that shows your [Claude Code](https://claude.ai/code)
 2. Launch it from Applications or Spotlight
 3. The icon appears in your menu bar immediately
 
-> **First launch blocked?** macOS blocks apps from unverified developers. Go to **System Settings → Privacy & Security** → scroll down → click **Open Anyway**.
+> **⚠️ Blocked on first launch?** macOS blocks apps from unverified developers. If you see "Apple could not verify..." or the app won't open:
+> 1. Go to **System Settings → Privacy & Security**
+> 2. Scroll down to the Security section
+> 3. Click **Open Anyway** next to the Claude Tray message
+> 4. Click **Open** in the confirmation dialog
 
 ### Windows
 Run the installer — it installs for your user account (no admin required) and launches automatically. The icon appears in the system tray (bottom-right). If it's hidden, click **^** to find it and drag it to the visible area.

@@ -12,10 +12,12 @@ A menu bar / system tray app for **Claude Code** (the CLI). Lives in your macOS 
 
 | Platform | Link |
 |----------|------|
-| macOS (Apple Silicon) | [Claude Tray.dmg](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray-1.0.1-arm64.dmg) |
-| Windows | [Claude Tray Setup.exe](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray.Setup.1.0.1.exe) |
+| macOS (Apple Silicon) | [Claude Tray.dmg](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray-1.0.2-arm64.dmg) |
+| Windows | [Claude Tray Setup.exe](https://github.com/eli-manning/claude-usage-tracker/releases/latest/download/Claude.Tray.Setup.1.0.2.exe) |
 
 Requires [Claude Code](https://docs.anthropic.ai/claude-code) installed and authenticated.
+
+> **macOS — first launch:** Apple will block the app because it's from an unverified developer. After opening the `.dmg` and dragging the app to Applications, go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
 
 **Features:**
 - Orange tray icon showing your current session % at all times

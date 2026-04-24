@@ -1,6 +1,7 @@
 const {
   app,
   Tray,
+  Menu,
   BrowserWindow,
   ipcMain,
   nativeImage,
@@ -612,8 +613,12 @@ app.whenReady().then(async () => {
   tray.setTitle("C …");
   tray.setToolTip("Claude Tray");
 
+  const contextMenu = Menu.buildFromTemplate([
+    { label: "Quit Claude Tray", click: () => app.quit() },
+  ]);
+
   tray.on("click", togglePopup);
-  tray.on("right-click", togglePopup);
+  tray.on("right-click", () => tray.popUpContextMenu(contextMenu));
 
   createPopupWindow();
 
