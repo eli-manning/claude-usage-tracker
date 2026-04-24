@@ -40,6 +40,9 @@ def main():
         if slave > 2:
             os.close(slave)
 
+        # Run from home dir so Claude saves its trust decision to ~/.claude/
+        os.chdir(os.path.expanduser('~'))
+
         # We pass /usage directly as an argument.
         # This bypasses the interactive prompt and TUI menu issues.
         os.execv(claude_path, [claude_path, '/usage'])
@@ -89,7 +92,8 @@ def main():
                     # Or if we've seen a percentage but 1.5s have passed without a reset line
                     if has_pct:
                         if has_reset:
-                            time.sleep(0.1)  # Tiny buffer for last bytes
+                            # If we accepted a trust prompt, give Claude time to persist the decision
+                            time.sleep(1.5 if trust_answered else 0.1)
                             break
                         elif (time.time() - last_pct_time) > 1.5:
                             break

@@ -242,7 +242,9 @@ function runClaudeUsage() {
               clearTimeout(doneTimeout);
               isPolling = false;
               resolve(parsed);
-              setTimeout(() => { try { ptyProc.kill(); } catch (e) {} }, 200);
+              // If we accepted a trust prompt, give Claude time to persist the decision
+              const killDelay = trustAccepted ? 1500 : 200;
+              setTimeout(() => { try { ptyProc.kill(); } catch (e) {} }, killDelay);
             }
           });
 
