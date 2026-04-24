@@ -12,6 +12,9 @@
   "build": {
     "appId": "com.eli.claude-tray",
     "productName": "Claude Tray",
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
     "extraResources": [
       {
         "from": "pty-wrapper.py",
