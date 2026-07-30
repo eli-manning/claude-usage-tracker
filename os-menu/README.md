@@ -25,6 +25,11 @@ Menu bar / system tray app that shows your [Claude Code](https://claude.ai/code)
 > 2. Scroll down to the Security section
 > 3. Click **Open Anyway** next to the Claude Tray message
 > 4. Click **Open** in the confirmation dialog
+>
+> If instead you see **"Claude Tray" is damaged and can't be opened**, that's a stricter Gatekeeper block with no button to bypass it. Run this in Terminal, then launch the app again:
+> ```
+> xattr -cr "/Applications/Claude Tray.app"
+> ```
 
 ### Windows
 Run the installer — it installs for your user account (no admin required) and launches automatically. The icon appears in the system tray (bottom-right). If it's hidden, click **^** to find it and drag it to the visible area.

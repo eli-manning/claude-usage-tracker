@@ -17,7 +17,7 @@ A menu bar / system tray app for **Claude Code** (the CLI). Lives in your macOS 
 
 Requires [Claude Code](https://docs.anthropic.ai/claude-code) installed and authenticated.
 
-> **macOS — first launch:** Apple will block the app because it's from an unverified developer. After opening the `.dmg` and dragging the app to Applications, go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+> **macOS — first launch:** Apple will block the app because it's from an unverified developer. After opening the `.dmg` and dragging the app to Applications, go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**. If it instead says the app "is damaged and can't be opened," run `xattr -cr "/Applications/Claude Tray.app"` in Terminal, then launch it again.
 
 **Features:**
 - Orange tray icon showing your current session % at all times
