@@ -22,7 +22,6 @@
 
   html, body {
     width: 100%;
-    height: 370px;
     background: transparent;
     overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
@@ -31,9 +30,13 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  /* Height is driven by actual rendered content (measured in JS after each
+     render and pushed to the main process via setWindowSize) rather than a
+     hardcoded pixel budget — text like the weekly promo banner wraps to a
+     different number of lines depending on its content, so a fixed formula
+     drifts out of sync with what's actually on screen. */
   .shell {
     width: 100%;
-    height: 370px;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -150,20 +153,32 @@
     color: var(--muted);
   }
 
+  .stat-sub {
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .promo {
+    font-size: 10px;
+    color: var(--accent);
+    padding: 9px 0 14px;
+    line-height: 1.4;
+  }
+
   .sep {
     height: 1px;
     background: var(--border);
     margin: 0;
     flex-shrink: 0;
   }
+  .sep-spaced { margin: 14px 0; }
 
   /* ── History ── */
   .history {
-    flex: 1;
-    padding: 10px 13px 0;
+    flex-shrink: 0;
+    padding: 12px 0 0;
     display: flex;
     flex-direction: column;
-    min-height: 0;
   }
 
   .history-head {
@@ -206,6 +221,107 @@
 
   canvas { display: block; width: 100% !important; flex-shrink: 0; }
 
+  /* ── Details toggle ── */
+  .details-toggle-row {
+    padding: 9px 13px;
+    flex-shrink: 0;
+  }
+
+  .details-toggle {
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 2px;
+    transition: color 0.1s;
+  }
+  .details-toggle:hover { color: var(--text); }
+  .details-toggle .chev { transition: transform 0.15s; font-size: 9px; }
+  .details-toggle.open .chev { transform: rotate(180deg); }
+
+  /* ── Details panel ── */
+  .details {
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 0 13px 13px;
+  }
+  .details::-webkit-scrollbar { width: 6px; }
+  .details::-webkit-scrollbar-thumb { background: var(--dim); border-radius: 3px; }
+
+  .d-section { margin-bottom: 14px; }
+  .d-section:last-child { margin-bottom: 0; }
+
+  .d-title {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 7px;
+  }
+
+  .d-chips {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .d-chip {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 9px;
+    flex: 1;
+    min-width: 78px;
+  }
+  .d-chip-label { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .d-chip-val { font-size: 13px; color: var(--text); font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  .d-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    font-size: 11px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+  }
+  .d-row:last-child { border-bottom: none; }
+  .d-row-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .d-row-val { color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .d-row-pct { color: var(--accent); font-weight: 600; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+  .d-fact {
+    font-size: 10.5px;
+    color: var(--muted);
+    line-height: 1.5;
+    font-style: italic;
+  }
+
+  /* ── Stale banner (shown over otherwise-valid cached data) ── */
+  .stale-banner {
+    margin: 10px 13px 0;
+    padding: 7px 10px;
+    background: rgba(212, 168, 67, 0.08);
+    border: 1px solid rgba(212, 168, 67, 0.25);
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10.5px;
+    color: var(--yellow);
+    line-height: 1.4;
+  }
+
   /* ── Error ── */
   .error-wrap {
     flex: 1;
@@ -218,6 +334,7 @@
     text-align: center;
   }
   .error-msg { font-size: 12px; color: var(--muted); line-height: 1.55; }
+  .error-msg.is-error { color: var(--red); }
   .error-cmd { font-size: 10px; color: var(--muted); opacity: 0.6; margin-top: 4px; }
 
   /* ── Footer ── */
@@ -279,6 +396,11 @@
   let chart = null;
   let nextAt = Date.now() + 5 * 60 * 1000;
   let lastSeenUpdate = null;
+  let detailsOpen = false;
+
+  const BASE_WIDTH = 315;
+  const BASE_HEIGHT = 370;
+  const MAX_HEIGHT = 640;
 
   function color(pct) {
     if (pct == null) return 'var(--muted)';
@@ -301,6 +423,10 @@
     return Math.floor(m / 60) + 'h ago';
   }
 
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  }
+
   function formatReset(s) {
     if (!s) return s;
     return s
@@ -310,12 +436,12 @@
       .trim();
   }
 
-  function statHTML(label, pct, reset) {
+  function statHTML(label, pct, reset, sub) {
     const c = color(pct);
     return `
       <div class="stat">
         <div class="stat-top">
-          <span class="stat-label">${label}</span>
+          <span class="stat-label">${esc(label)}</span>
           <span class="stat-num" style="color:${c}">
             ${pct != null ? pct : '—'}<span class="stat-pct">%</span>
           </span>
@@ -323,40 +449,117 @@
         <div class="bar-track">
           <div class="bar-fill" style="width:${pct ?? 0}%;background:${c}"></div>
         </div>
-        ${reset ? `<div class="stat-reset">${formatReset(reset)}</div>` : ''}
+        ${reset ? `<div class="stat-reset">${esc(formatReset(reset))}</div>` : ''}
+        ${sub ? `<div class="stat-sub">${esc(sub)}</div>` : ''}
       </div>`;
   }
 
+  function tableRowsHTML(entries) {
+    return entries
+      .map(
+        (e) => `
+      <div class="d-row">
+        <span class="d-row-name">${esc(e.name)}</span>
+        <span class="d-row-pct">${e.pct}%</span>
+      </div>`
+      )
+      .join('');
+  }
+
   function computeWidth(data) {
-    if (!data || (data.session == null && data.weekly == null)) return 315;
+    if (!data || (data.session == null && data.weekly == null)) return BASE_WIDTH;
     const digits = Math.max(
       String(data.session ?? 0).length,
-      String(data.weekly ?? 0).length
+      String(data.weekly ?? 0).length,
+      String(data.credits?.pct ?? 0).length
     );
     if (digits >= 3) return 345;
     if (digits <= 1) return 295;
-    return 315;
+    return BASE_WIDTH;
+  }
+
+  function detailsHTML(data) {
+    const parts = [];
+
+    if (data.skills && data.skills.length) {
+      parts.push(`
+        <div class="d-section">
+          <div class="d-title">Skills</div>
+          ${tableRowsHTML(data.skills)}
+        </div>`);
+    }
+
+    if (data.mcpServers && data.mcpServers.length) {
+      parts.push(`
+        <div class="d-section">
+          <div class="d-title">MCP Servers</div>
+          ${tableRowsHTML(data.mcpServers)}
+        </div>`);
+    }
+
+    if (data.stats) {
+      const st = data.stats;
+      const chips = [];
+      if (st.favoriteModel) chips.push(['Favorite model', st.favoriteModel]);
+      if (st.totalTokens) chips.push(['Total tokens', st.totalTokens]);
+      if (st.sessions != null) chips.push(['Sessions', String(st.sessions)]);
+      if (st.activeDays != null) chips.push(['Active days', `${st.activeDays}/${st.totalDays}`]);
+      if (st.longestSession) chips.push(['Longest session', st.longestSession]);
+      if (st.longestStreak) chips.push(['Longest streak', st.longestStreak]);
+      if (st.currentStreak) chips.push(['Current streak', st.currentStreak]);
+      if (st.mostActiveDay) chips.push(['Most active day', st.mostActiveDay]);
+
+      let html = `<div class="d-section"><div class="d-title">All Time</div>`;
+      if (chips.length) {
+        html += `<div class="d-chips">${chips
+          .map(([label, val]) => `<div class="d-chip"><div class="d-chip-label">${esc(label)}</div><div class="d-chip-val">${esc(val)}</div></div>`)
+          .join('')}</div>`;
+      }
+      if (st.funFact) html += `<div class="d-fact">${esc(st.funFact)}</div>`;
+      html += `</div>`;
+      parts.push(html);
+    }
+
+    return parts.join('');
   }
 
   function render(data) {
     const el = document.getElementById('main');
 
     if (!data || (data.session == null && data.weekly == null)) {
+      // No cached data to fall back on (first launch, or every attempt so
+      // far has failed) — message is tailored per errorType rather than
+      // echoing the raw error string, since that string was written for the
+      // "still have stale data" banner case (see staleBanner below) and
+      // reads oddly here (e.g. "showing last known usage" when there isn't any).
+      const msg =
+        data?.errorType === 'offline' ? "You're offline." :
+        data?.errorType === 'auth' ? "Not logged in to Claude Code." :
+        data?.error || 'Fetching usage...';
+      const hint =
+        data?.errorType === 'offline' ? "Waiting for a connection…" :
+        data?.errorType === 'auth' ? 'Run `claude` in a terminal to log in.' :
+        data?.error ? 'npm i -g @anthropic-ai/claude-code' : '';
       el.innerHTML = `
         <div class="error-wrap">
-          <div class="error-msg">${data?.error || 'Fetching usage...'}</div>
-          ${data?.error ? '<div class="error-cmd">npm i -g @anthropic-ai/claude-code</div>' : ''}
+          <div class="error-msg${data?.error ? ' is-error' : ''}">${esc(msg)}</div>
+          ${hint ? `<div class="error-cmd">${esc(hint)}</div>` : ''}
         </div>`;
       chart = null;
       return;
     }
 
-    el.innerHTML = `
-      <div class="stats">
-        ${statHTML('Session', data.session, data.sessionReset)}
-        ${statHTML('Weekly', data.weekly, data.weeklyReset)}
-      </div>
-      <div class="sep"></div>
+    const credits = data.credits;
+    const staleBanner = data.error
+      ? `<div class="stale-banner">${esc(
+          data.errorType === 'offline' ? "Offline — showing last known usage" : data.error
+        )}</div>`
+      : '';
+
+    // History graph and the weekly promo banner live inside the expandable
+    // "details" panel now too, so the collapsed popup is just the three
+    // gauges plus a toggle — not a big wall of stuff by default.
+    const historyHTML = `
       <div class="history">
         <div class="history-head">
           <span class="history-label">History</span>
@@ -367,9 +570,37 @@
         </div>
         <canvas id="chart" height="52"></canvas>
       </div>`;
+    const promoHTML = data.weeklyPromo ? `<div class="promo">${esc(data.weeklyPromo)}</div>` : '';
+
+    el.innerHTML = `
+      ${staleBanner}
+      <div class="stats">
+        ${statHTML('Session', data.session, data.sessionReset)}
+        ${statHTML('Weekly', data.weekly, data.weeklyReset)}
+        ${credits && credits.pct != null ? statHTML('Credits', credits.pct, credits.reset, credits.spent != null ? `$${credits.spent.toFixed(2)} / $${credits.total.toFixed(2)} spent` : null) : ''}
+      </div>
+      <div class="sep"></div>
+      <div class="details-toggle-row">
+        <button class="details-toggle ${detailsOpen ? 'open' : ''}" id="detailsToggleBtn">
+          <span>${detailsOpen ? 'Hide' : 'Show'} details</span><span class="chev">▾</span>
+        </button>
+      </div>
+      ${detailsOpen ? (() => {
+        const rest = detailsHTML(data);
+        return `<div class="details">${historyHTML}${promoHTML}${rest ? `<div class="sep sep-spaced"></div>${rest}` : ''}</div>`;
+      })() : ''}`;
 
     chart = document.getElementById('chart');
     drawChart();
+
+    const toggleBtn = document.getElementById('detailsToggleBtn');
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', () => {
+        detailsOpen = !detailsOpen;
+        render(data);
+        applySize(data);
+      });
+    }
   }
 
   function switchChart(mode) {
@@ -450,11 +681,21 @@
     }
   }
 
+  function applySize(data) {
+    const width = computeWidth(data);
+    // Measure actual rendered height (post-layout, so text wrapping etc. is
+    // accounted for) rather than guessing it from a pixel formula.
+    const shell = document.querySelector('.shell');
+    const measured = shell ? shell.getBoundingClientRect().height : BASE_HEIGHT;
+    const height = Math.round(Math.min(MAX_HEIGHT, Math.max(BASE_HEIGHT, measured)));
+    window.claudeAPI.setWindowSize(width, height);
+  }
+
   function updateUI(data) {
     currentData = data;
     document.getElementById('lastUpdated').textContent = 'updated ' + ago(data?.lastUpdated);
     render(data);
-    window.claudeAPI.setWindowWidth(computeWidth(data));
+    applySize(data);
     if (data && (data.session != null || data.weekly != null)) {
       history.push({ ...data, timestamp: Date.now() });
       if (history.length > 200) history.shift();
