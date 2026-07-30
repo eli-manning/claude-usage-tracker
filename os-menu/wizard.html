@@ -367,16 +367,37 @@
     e.target.classList.toggle('on', loginItemOn);
   });
 
+  // Registered synchronously, before any other IPC round-trip, so there's no
+  // window where the app's initial background check could finish and
+  // broadcast its result before this listener exists — a "send" to a
+  // renderer with no listener attached yet is just dropped, not queued, so
+  // that race left the wizard stuck on the spinner until Recheck was
+  // clicked (which fetches and renders directly, sidestepping the broadcast
+  // entirely). pollStatus() below is a second, independent safety net in
+  // case some other timing gap causes a broadcast to go missing.
+  window.wizardAPI.onUsageUpdate((data) => {
+    latestData = data;
+    if (step === 1) renderStatus(data);
+  });
+
+  let statusPollTimer = null;
+  function pollStatus() {
+    if (statusPollTimer) return;
+    statusPollTimer = setInterval(async () => {
+      if (step !== 1) return;
+      const data = await window.wizardAPI.getUsage();
+      latestData = data;
+      renderStatus(data);
+    }, 1500);
+  }
+
   (async () => {
     loginItemOn = await window.wizardAPI.getLoginItem();
     document.getElementById('loginToggle').classList.toggle('on', loginItemOn);
 
     latestData = await window.wizardAPI.getUsage();
     renderStatus(latestData);
-    window.wizardAPI.onUsageUpdate((data) => {
-      latestData = data;
-      if (step === 1) renderStatus(data);
-    });
+    pollStatus();
   })();
 
   render();
