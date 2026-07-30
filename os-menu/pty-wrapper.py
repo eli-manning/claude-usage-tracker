@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Runs Claude Code in a PTY with the /usage command passed as an argument.
-Captures the output and exits as soon as data is received.
-Usage: python3 pty-wrapper.py <path-to-claude>
+Runs Claude Code in a PTY with a slash command passed as an argument.
+Captures the output and exits once the screen has settled.
+Usage: python3 pty-wrapper.py <path-to-claude> [command]
+  command defaults to /usage; also used for /stats.
 """
 import os
 import pty
@@ -10,6 +11,17 @@ import select
 import sys
 import time
 import signal
+import struct
+
+try:
+    import fcntl
+    import termios
+except ImportError:
+    fcntl = None
+    termios = None
+
+IDLE_QUIET_S = 0.8  # no new bytes for this long => screen considered settled
+MIN_ELAPSED_S = 1.0  # ignore idle detection until at least this much has elapsed (startup animation)
 
 
 def main():
@@ -17,7 +29,17 @@ def main():
         sys.exit(1)
 
     claude_path = sys.argv[1]
+    command = sys.argv[2] if len(sys.argv) > 2 else "/usage"
+
     master, slave = pty.openpty()
+
+    # Default PTY size (24x80) truncates content past row 24 — /stats runs
+    # past that. Grow it so the TUI renders everything in one frame.
+    if fcntl and termios:
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 60, 200, 0, 0))
+        except Exception:
+            pass
 
     pid = os.fork()
     if pid == 0:
@@ -27,8 +49,6 @@ def main():
 
         # Standard PTY setup
         try:
-            import fcntl
-            import termios
             fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
         except Exception:
             pass
@@ -43,26 +63,23 @@ def main():
         # Run from home dir so Claude saves its trust decision to ~/.claude/
         os.chdir(os.path.expanduser('~'))
 
-        # We pass /usage directly as an argument.
-        # This bypasses the interactive prompt and TUI menu issues.
-        os.execv(claude_path, [claude_path, '/usage'])
+        os.execv(claude_path, [claude_path, command])
         os._exit(1)
 
     # PARENT PROCESS
     os.close(slave)
     buf = b''
     start_time = time.time()
-    timeout = 10  # Maximum seconds to wait
-    last_pct_time = time.time()
+    last_data_time = start_time
+    timeout = 14  # Maximum seconds to wait
     trust_answered = False
 
     try:
         while True:
-            # Check if we've timed out
-            if (time.time() - start_time) > timeout:
+            now = time.time()
+            if (now - start_time) > timeout:
                 break
 
-            # Watch the PTY master for data
             r, _, _ = select.select([master], [], [], 0.1)
             if r:
                 try:
@@ -71,6 +88,7 @@ def main():
                         break
 
                     buf += data
+                    last_data_time = time.time()
                     sys.stdout.buffer.write(data)
                     sys.stdout.buffer.flush()
 
@@ -83,24 +101,17 @@ def main():
                             os.write(master, b'\r')
                         except OSError:
                             pass
-
-                    # Check for completion markers
-                    has_pct = b'% used' in buf or b'under 5%' in buf.lower()
-                    has_reset = b'resets' in buf.lower() or b'in ' in buf.lower()
-
-                    # Only exit early if we have BOTH the percentage AND the reset time
-                    # Or if we've seen a percentage but 1.5s have passed without a reset line
-                    if has_pct:
-                        if has_reset:
-                            # If we accepted a trust prompt, give Claude time to persist the decision
-                            time.sleep(1.5 if trust_answered else 0.1)
-                            break
-                        elif (time.time() - last_pct_time) > 1.5:
-                            break
-                    else:
-                        last_pct_time = time.time()
+                        last_data_time = time.time()  # don't treat the trust prompt as "settled"
                 except OSError:
                     break
+
+            # Once the screen stops changing, give it a moment more (in case a
+            # trust prompt was just accepted) then stop.
+            now = time.time()
+            idle_for = now - last_data_time
+            elapsed = now - start_time
+            if elapsed > MIN_ELAPSED_S and idle_for > IDLE_QUIET_S:
+                break
 
             # If the child process has already exited, stop reading
             if os.waitpid(pid, os.WNOHANG)[0] != 0:

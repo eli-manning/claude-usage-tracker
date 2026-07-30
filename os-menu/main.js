@@ -8,9 +8,11 @@ const {
   screen,
 } = require("electron");
 const { spawn, exec } = require("child_process");
+const dns = require("dns");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
+const { parseUsageOutput, parseStatsOutput, toCleanLines } = require("./usage-parser.js");
 
 const LOG_FILE = path.join(os.homedir(), "claude-tray-debug.log");
 function log(...args) {
@@ -26,75 +28,32 @@ let usageData = {
   weekly: null,
   sessionReset: null,
   weeklyReset: null,
+  weeklyPromo: null,
+  credits: null,
+  skills: null,
+  mcpServers: null,
+  stats: null,
   error: null,
+  errorType: null, // 'offline' | 'auth' | null (unclassified)
+  lastAttempt: null,
 };
 let pollInterval = null;
 let isPolling = false;
 
-// ─── Parse /usage output ────────────────────────────────────────────────────
-
-function parseUsageOutput(raw) {
-  const result = {
-    session: null,
-    weekly: null,
-    sessionReset: null,
-    weeklyReset: null,
-  };
-
-  // On Windows (ConPTY), the TUI positions each row with \x1b[N;MH instead of \r\n.
-  // Insert a newline before each absolute cursor-position sequence so the
-  // line-based parser below can find session and weekly values on separate lines.
-  raw = raw.replace(/\x1b\[\d+;\d*[Hf]/g, "\n");
-
-  // Repair mid-word cursor moves that corrupt words.
-  // \x1b[1C (cursor forward) splits words like "Resets" → "Rese s"; strip it.
-  // \x1b[Na (cursor up) ends in 'a', which the general ANSI strip eats, turning "9am" → "9m"; preserve the 'a'.
-  let clean = raw
-    .replace(/\x1b\[1C/g, "")
-    .replace(/\x1b\[[0-9;?]*a/g, "a");
-
-  // Strip remaining ANSI fluff
-  clean = clean
-    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")
-    .replace(/[─│╭╰╮╯━┃┏┗┓┛█▌▛▜▝▞▟▐▙▚]/g, "")
-    .replace(/\r/g, "\n");
-
-  const lines = clean
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  const pcts = [];
-  const resetLines = [];
-
-  lines.forEach((line, index) => {
-    const pctMatch = line.match(/(\d+)%\s*used/i);
-    if (pctMatch) pcts.push({ val: parseInt(pctMatch[1]), idx: index });
-
-    // Look for "Resets" or time markers like "pm"
-    if (/rese[st]s?|am|pm/i.test(line)) {
-      resetLines.push({ text: line, idx: index });
-    }
+// Checked before spawning `claude` at all — a DNS lookup is faster than
+// waiting out a doomed PTY call, and (unlike parsing claude's own error
+// text) doesn't depend on guessing what wording a given failure mode prints.
+function isOnline() {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), 3000);
+    dns.lookup("anthropic.com", (err) => {
+      clearTimeout(timer);
+      resolve(!err);
+    });
   });
-
-  // Assign the first percentage to the first reset line found after it
-  if (pcts.length >= 1) {
-    result.session = pcts[0].val;
-    const sR = resetLines.find((r) => r.idx > pcts[0].idx);
-    if (sR) result.sessionReset = sR.text.replace(/^rese[st]s?\s*/i, "").trim();
-  }
-
-  // Assign the second percentage to the reset line after that
-  if (pcts.length >= 2) {
-    result.weekly = pcts[1].val;
-    const wR = resetLines.find((r) => r.idx > pcts[1].idx);
-    if (wR) result.weeklyReset = wR.text.replace(/^rese[st]s?\s*/i, "").trim();
-  }
-
-  return result;
 }
 
-// ─── Run claude /usage ───────────────────────────────────────────────────────
+// ─── Run claude commands ─────────────────────────────────────────────────────
 
 function findClaudePath() {
   // Common install locations
@@ -117,20 +76,59 @@ function findClaudePath() {
   return candidates;
 }
 
-function runClaudeUsage() {
+// Runs `claude <command>` in a PTY and resolves with parseFn(accumulatedOutput).
+// Unlike the old single-shot /usage-only version, this doesn't resolve as soon
+// as a couple of fields show up — /usage's later sections (skills, MCP
+// servers, usage credits) render after session/weekly, so resolving early
+// would kill the process before they arrive. Both platforms instead wait for
+// the screen to go idle (pty-wrapper.py does this itself on Mac/Linux; the
+// Windows ConPTY path below replicates it with an idle timer) and parse once.
+// Called when a PTY run produced no parseable session/weekly/stats data at
+// all. A logged-out `claude` doesn't jump straight to a "please log in"
+// message — it shows the first-run onboarding wizard (theme picker, "Let's
+// get started") first, and our idle-based capture gets stuck there (it's an
+// interactive menu, nothing advances without a keypress we don't send) well
+// before reaching a screen whose text actually contains "login". So the
+// wizard screen itself is the signal: legitimately-authenticated sessions
+// never see it, since Claude Code only shows onboarding once.
+function classifyNoDataError(accumulatedOutput) {
+  // Must check the reconstructed (grid-rendered) text, not the raw ANSI —
+  // the raw string still has escape codes sitting between letters
+  // ("Welcome\x1b[9Gto\x1b[12GClaude..."), so a substring search against it
+  // never matches even when the rendered text is perfectly readable.
+  // Also strip all punctuation, not just whitespace: the wizard's "Let's
+  // get started" keeps its apostrophe after whitespace-only stripping,
+  // which alone is enough to break a naive "letsgetstarted" match.
+  const clean = toCleanLines(accumulatedOutput).join(" ");
+  const normalized = clean.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const needsSetup =
+    normalized.includes("letsgetstarted") ||
+    normalized.includes("welcometoclaudecode") ||
+    normalized.includes("choosethetextstyle") ||
+    normalized.includes("selectloginmethod");
+  const isAuthError =
+    needsSetup || /\blogin\b/i.test(clean) || /authenticated/i.test(clean);
+  if (isAuthError) {
+    return {
+      error: 'Not logged in — run "claude" in a terminal to log in.',
+      errorType: "auth",
+    };
+  }
+  return { error: "Could not find usage data in output.", errorType: null };
+}
+
+function runClaudeCommand(command, parseFn) {
   return new Promise((resolve) => {
     if (isPolling) return resolve(null);
     isPolling = true;
 
-    // Safety timeout - if nothing happens in 15s, fail gracefully
+    // Safety timeout - if nothing happens in 20s, fail gracefully
     const timeout = setTimeout(() => {
       isPolling = false;
       resolve({
-        session: null,
-        weekly: null,
         error: "Timed out. Is Claude Code authenticated?",
       });
-    }, 15000);
+    }, 20000);
 
     const isWin = process.platform === "win32";
     const pathSep = isWin ? ";" : ":";
@@ -185,8 +183,6 @@ function runClaudeUsage() {
             clearTimeout(timeout);
             isPolling = false;
             return resolve({
-              session: null,
-              weekly: null,
               error: "node-pty unavailable. Run: npm install",
             });
           }
@@ -204,10 +200,12 @@ function runClaudeUsage() {
 
           log("Windows ConPTY spawning:", claudeCmd);
 
-          const ptyProc = nodePty.spawn(claudeCmd, ["/usage"], {
+          const ptyProc = nodePty.spawn(claudeCmd, [command], {
             name: "xterm",
-            cols: 120,
-            rows: 30,
+            // Default 30 rows truncates /stats' bottom section; grow it so
+            // the TUI renders everything in one frame (mirrors pty-wrapper.py).
+            cols: 200,
+            rows: 60,
             cwd: os.homedir(),
             env: {
               ...augmentedEnv,
@@ -218,13 +216,37 @@ function runClaudeUsage() {
           });
 
           let accumulatedOutput = "";
-          let gotUsage = false;
+          let settled = false;
           let trustAccepted = false;
-          const doneTimeout = setTimeout(() => {
-            try { ptyProc.kill(); } catch (e) {}
-          }, 16000);
+          const IDLE_QUIET_MS = 900;
+          let idleTimer = null;
+
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            if (idleTimer) clearTimeout(idleTimer);
+            isPolling = false;
+            const finalParsed = parseFn(accumulatedOutput);
+            log("PTY settled, parsed:", JSON.stringify(finalParsed));
+            const hasData = Object.values(finalParsed).some((v) => v != null);
+            if (hasData) {
+              resolve(finalParsed);
+            } else {
+              resolve(classifyNoDataError(accumulatedOutput));
+            }
+            try {
+              ptyProc.kill();
+            } catch (e) {}
+          };
+
+          const armIdleTimer = () => {
+            if (idleTimer) clearTimeout(idleTimer);
+            idleTimer = setTimeout(finish, IDLE_QUIET_MS);
+          };
 
           ptyProc.onData((data) => {
+            if (settled) return;
             accumulatedOutput += data;
             log("PTY accumulated length:", accumulatedOutput.length);
             // Auto-accept the "trust this directory?" prompt that Claude shows
@@ -235,56 +257,31 @@ function runClaudeUsage() {
               trustAccepted = true;
               ptyProc.write("\r");
             }
-            const parsed = parseUsageOutput(accumulatedOutput);
-            if (parsed.session !== null && parsed.weekly !== null && !gotUsage) {
-              gotUsage = true;
-              log("PTY: full usage data captured");
-              clearTimeout(timeout);
-              clearTimeout(doneTimeout);
-              isPolling = false;
-              resolve(parsed);
-              // If we accepted a trust prompt, give Claude time to persist the decision
-              const killDelay = trustAccepted ? 1500 : 200;
-              setTimeout(() => { try { ptyProc.kill(); } catch (e) {} }, killDelay);
-            }
+            armIdleTimer();
           });
+          armIdleTimer();
 
           ptyProc.onExit(() => {
-            clearTimeout(timeout);
-            clearTimeout(doneTimeout);
-            isPolling = false;
-            log("PTY closed, gotUsage:", gotUsage);
-            log("PTY raw output:", JSON.stringify(accumulatedOutput.slice(0, 3000)));
-            log("PTY parsed:", JSON.stringify(parseUsageOutput(accumulatedOutput)));
-            if (!gotUsage) {
-              const finalParsed = parseUsageOutput(accumulatedOutput);
-              if (finalParsed.session !== null || finalParsed.weekly !== null) {
-                resolve(finalParsed);
-              } else {
-                const isAuthError =
-                  accumulatedOutput.includes("login") ||
-                  accumulatedOutput.includes("authenticated");
-                resolve({
-                  session: null,
-                  weekly: null,
-                  error: isAuthError
-                    ? 'Please run "claude" in terminal to login.'
-                    : "Could not find usage numbers in output.",
-                });
-              }
-            }
+            log("PTY closed");
+            finish();
           });
 
-          return; // Resolution handled by pty callbacks above
+          return; // Resolution handled by finish() above
         }
         // ── End Windows ConPTY path ───────────────────────────────────────────
 
-        // 2. Mac/Linux: spawn via python3 pty-wrapper
+        // 2. Mac/Linux: spawn via python3 pty-wrapper.
+        // pty-wrapper.py handles its own idle-based completion detection and
+        // exits once the screen has settled — we just wait for it to close
+        // and parse the final accumulated output. Resolving early on partial
+        // content (as the old version did once session+weekly appeared) would
+        // kill the process before later sections (skills, MCP servers, usage
+        // credits, /stats fields) had a chance to render.
         const ptyWrapper = app.isPackaged
           ? path.join(process.resourcesPath, "pty-wrapper.py")
           : path.join(__dirname, "pty-wrapper.py");
 
-        const child = spawn("python3", [ptyWrapper, claudePath], {
+        const child = spawn("python3", [ptyWrapper, claudePath, command], {
           env: {
             ...augmentedEnv,
             TERM: "dumb", // Essential for consistent parsing
@@ -293,67 +290,35 @@ function runClaudeUsage() {
           },
         });
 
-        let output = "";
-        let gotUsage = false;
-
         const doneTimeout = setTimeout(() => {
           if (child) child.kill();
-        }, 16000);
+        }, 18000);
 
-        let accumulatedOutput = ""; // This must persist across "data" events
+        let accumulatedOutput = "";
 
         child.stdout.on("data", (data) => {
           accumulatedOutput += data.toString();
           log("Accumulated length:", accumulatedOutput.length);
-
-          const parsed = parseUsageOutput(accumulatedOutput);
-
-          // Robust check: Only resolve early if we have BOTH session AND weekly data
-          // Otherwise, let the 'close' event handle the final fallback
-          if (parsed.session !== null && parsed.weekly !== null && !gotUsage) {
-            gotUsage = true;
-            log("Full usage data (Session + Weekly) captured.");
-
-            clearTimeout(timeout);
-            clearTimeout(doneTimeout);
-            isPolling = false;
-            resolve(parsed);
-
-            setTimeout(() => {
-              try {
-                child.kill();
-              } catch (e) {}
-            }, 200);
-          }
         });
 
         child.stderr.on("data", (data) => {
-          output += data.toString();
           log("stderr chunk:", data.toString().slice(0, 100));
         });
 
-        // 3. Fallback: Parse one last time when the process closes
         child.on("close", (code) => {
           clearTimeout(timeout);
           clearTimeout(doneTimeout);
           isPolling = false;
-          log("child closed, code:", code, "gotUsage:", gotUsage);
+          const finalParsed = parseFn(accumulatedOutput);
+          log("child closed, code:", code);
           log("raw accumulated output:", JSON.stringify(accumulatedOutput.slice(0, 3000)));
-          log("parsed result:", JSON.stringify(parseUsageOutput(accumulatedOutput)));
+          log("parsed result:", JSON.stringify(finalParsed));
 
-          if (!gotUsage) {
-            const finalParsed = parseUsageOutput(accumulatedOutput);
-            if (finalParsed.session !== null || finalParsed.weekly !== null) {
-              resolve(finalParsed);
-            } else {
-              // Check if user needs to log in
-              const isAuthError =
-                accumulatedOutput.includes("login") || accumulatedOutput.includes("authenticated");
-              const errorMsg = isAuthError
-                ? 'Please run "claude" in terminal to login.'
-                : "Could not find usage numbers in output.";
-              resolve({ session: null, weekly: null, error: errorMsg });
-            }
+          const hasData = Object.values(finalParsed).some((v) => v != null);
+          if (hasData) {
+            resolve(finalParsed);
+          } else {
+            resolve(classifyNoDataError(accumulatedOutput));
           }
         });
 
@@ -361,14 +326,32 @@ function runClaudeUsage() {
           clearTimeout(timeout);
           isPolling = false;
           resolve({
-            session: null,
-            weekly: null,
             error: `Process error: ${err.message}`,
           });
         });
       }
     );
   });
+}
+
+// Fetches /usage then /stats (sequentially — running two `claude` PTYs at
+// once risks both racing the same directory-trust prompt) and merges them
+// into one usageData-shaped object. If /usage fails outright, /stats is
+// skipped since it's the less critical of the two.
+async function fetchUsageAndStats() {
+  if (!(await isOnline())) {
+    return { error: "You're offline.", errorType: "offline" };
+  }
+
+  const usage = await runClaudeCommand("/usage", parseUsageOutput);
+  if (!usage) return null; // another poll already in flight
+
+  if (usage.error && usage.session == null && usage.weekly == null) {
+    return usage;
+  }
+
+  const stats = await runClaudeCommand("/stats", parseStatsOutput);
+  return { ...usage, ...(stats || {}), error: usage.error || (stats && stats.error) || null };
 }
 
 // ─── Tray icon ───────────────────────────────────────────────────────────────
@@ -450,7 +433,9 @@ async function updateTrayTitle() {
   const sPct = session != null ? session : null;
   const wPct = weekly != null ? weekly : null;
 
-  if (error) {
+  // No usable data at all (nothing ever fetched successfully, or auth is
+  // broken) — show the hard error state.
+  if (error && sPct == null && wPct == null) {
     tray.setImage(nativeImage.createEmpty());
     tray.setTitle("C !");
     tray.setToolTip("Claude Tray: " + error);
@@ -464,8 +449,12 @@ async function updateTrayTitle() {
     return;
   }
 
+  // Stale-but-valid: keep showing the last known percentages, just note in
+  // the tooltip that the latest refresh failed instead of hiding the icon.
   tray.setToolTip(
-    `Claude Usage — Session: ${sPct ?? "?"}%  Weekly: ${wPct ?? "?"}%`
+    error
+      ? `Claude Usage — Session: ${sPct ?? "?"}%  Weekly: ${wPct ?? "?"}% (${error})`
+      : `Claude Usage — Session: ${sPct ?? "?"}%  Weekly: ${wPct ?? "?"}%`
   );
 
   const icon = await generateTrayIcon(sPct);
@@ -567,33 +556,72 @@ function togglePopup() {
 
 ipcMain.handle("get-usage", () => usageData);
 
-ipcMain.handle("set-window-width", (_, width) => {
+ipcMain.handle("set-window-size", (_, width, height) => {
   if (!popupWindow || popupWindow.isDestroyed()) return;
-  const [, height] = popupWindow.getSize();
+  const [, oldH] = popupWindow.getSize();
+  const [oldX, oldY] = popupWindow.getPosition();
   popupWindow.setSize(width, height);
-  // Recenter over tray icon after resize
-  if (tray) {
-    const trayBounds = tray.getBounds();
-    const display = screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y });
-    let x = Math.round(trayBounds.x + trayBounds.width / 2 - width / 2);
-    x = Math.max(display.bounds.x + 8, Math.min(x, display.bounds.x + display.bounds.width - width - 8));
-    popupWindow.setPosition(x, popupWindow.getPosition()[1]);
-  }
+
+  if (!tray) return;
+  const trayBounds = tray.getBounds();
+  const display = screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y });
+
+  let x = Math.round(trayBounds.x + trayBounds.width / 2 - width / 2);
+  x = Math.max(display.bounds.x + 8, Math.min(x, display.bounds.x + display.bounds.width - width - 8));
+
+  // Taskbar-at-bottom layouts anchor the popup above the tray icon — keep its
+  // bottom edge fixed as height changes so it grows upward, not off-screen.
+  const anchoredAbove =
+    process.platform === "win32" || trayBounds.y > display.bounds.height / 2;
+  let y = anchoredAbove ? oldY + (oldH - height) : oldY;
+  y = Math.max(
+    display.bounds.y + 8,
+    Math.min(y, display.bounds.y + display.bounds.height - height - 8)
+  );
+
+  popupWindow.setPosition(x, y);
 });
 
-ipcMain.handle("refresh", async () => {
-  const data = await runClaudeUsage();
-  if (data) {
+function applyUsageData(data) {
+  if (!data) return;
+
+  // A fetch that returned only an error (offline, not logged in, timed out,
+  // etc.) shouldn't blank out the popup — keep whatever was last fetched
+  // successfully on screen and just surface the error/staleness alongside it.
+  const isFailure = !!data.error && data.session == null && data.weekly == null && data.stats == null;
+  if (isFailure) {
     usageData = {
-      session: null,
-      weekly: null,
-      ...data,
-      lastUpdated: Date.now(),
+      ...usageData,
+      error: data.error,
+      errorType: data.errorType || null,
+      lastAttempt: Date.now(),
     };
-    await updateTrayTitle();
-    if (popupWindow && !popupWindow.isDestroyed()) {
-      popupWindow.webContents.send("usage-update", usageData);
-    }
+    return;
+  }
+
+  usageData = {
+    session: null,
+    weekly: null,
+    sessionReset: null,
+    weeklyReset: null,
+    weeklyPromo: null,
+    credits: null,
+    skills: null,
+    mcpServers: null,
+    stats: null,
+    ...data,
+    error: null,
+    errorType: null,
+    lastUpdated: Date.now(),
+    lastAttempt: Date.now(),
+  };
+}
+
+ipcMain.handle("refresh", async () => {
+  applyUsageData(await fetchUsageAndStats());
+  await updateTrayTitle();
+  if (popupWindow && !popupWindow.isDestroyed()) {
+    popupWindow.webContents.send("usage-update", usageData);
   }
   return usageData;
 });
@@ -629,31 +657,15 @@ app.whenReady().then(async () => {
   });
 
   // Initial fetch
-  const data = await runClaudeUsage();
-  if (data) {
-    usageData = {
-      session: null,
-      weekly: null,
-      ...data,
-      lastUpdated: Date.now(),
-    };
-    await updateTrayTitle();
-  }
+  applyUsageData(await fetchUsageAndStats());
+  await updateTrayTitle();
 
   // Poll every 5 minutes
   pollInterval = setInterval(async () => {
-    const data = await runClaudeUsage();
-    if (data) {
-      usageData = {
-        session: null,
-        weekly: null,
-        ...data,
-        lastUpdated: Date.now(),
-      };
-      await updateTrayTitle();
-      if (popupWindow && popupWindow.isVisible()) {
-        popupWindow.webContents.send("usage-update", usageData);
-      }
+    applyUsageData(await fetchUsageAndStats());
+    await updateTrayTitle();
+    if (popupWindow && popupWindow.isVisible()) {
+      popupWindow.webContents.send("usage-update", usageData);
     }
   }, 5 * 60 * 1000);
 });
