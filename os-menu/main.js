@@ -23,6 +23,7 @@ function log(...args) {
 
 let tray = null;
 let popupWindow = null;
+let wizardWindow = null;
 let usageData = {
   session: null,
   weekly: null,
@@ -467,6 +468,19 @@ async function updateTrayTitle() {
   }
 }
 
+// Pushes the latest usageData to whichever windows are alive — the popup
+// (only meaningful while visible; it also pulls on show) and the setup
+// wizard's "Checking Claude Code" step, which needs to react live since it
+// can be open before the very first fetch resolves.
+function broadcastUsageUpdate() {
+  if (popupWindow && !popupWindow.isDestroyed()) {
+    popupWindow.webContents.send("usage-update", usageData);
+  }
+  if (wizardWindow && !wizardWindow.isDestroyed()) {
+    wizardWindow.webContents.send("usage-update", usageData);
+  }
+}
+
 // ─── Popup window ─────────────────────────────────────────────────────────────
 
 function createPopupWindow() {
@@ -552,6 +566,62 @@ function togglePopup() {
   popupWindow.webContents.send("usage-update", usageData);
 }
 
+// ─── Setup wizard ────────────────────────────────────────────────────────────
+// Shown once on first launch (persisted via a flag file in userData, not
+// electron-store — this app has no other need for a dependency like that).
+// Re-openable anytime from the tray's right-click menu.
+
+function setupFlagPath() {
+  return path.join(app.getPath("userData"), "setup-complete.json");
+}
+
+function isSetupComplete() {
+  try {
+    return JSON.parse(fs.readFileSync(setupFlagPath(), "utf8")).complete === true;
+  } catch (e) {
+    return false; // missing/corrupt flag file — treat as not-yet-onboarded
+  }
+}
+
+function markSetupComplete() {
+  try {
+    fs.writeFileSync(setupFlagPath(), JSON.stringify({ complete: true }));
+  } catch (e) {
+    log("failed to write setup flag:", e.message);
+  }
+}
+
+function createWizardWindow() {
+  if (wizardWindow && !wizardWindow.isDestroyed()) {
+    wizardWindow.focus();
+    return;
+  }
+
+  wizardWindow = new BrowserWindow({
+    width: 400,
+    height: 400,
+    show: false,
+    frame: false,
+    resizable: false,
+    center: true,
+    skipTaskbar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, "wizard-preload.js"),
+    },
+  });
+
+  wizardWindow.loadFile(path.join(__dirname, "wizard.html"));
+  wizardWindow.once("ready-to-show", () => {
+    wizardWindow.show();
+    wizardWindow.focus();
+  });
+  wizardWindow.on("closed", () => {
+    wizardWindow = null;
+  });
+}
+
 // ─── IPC handlers ────────────────────────────────────────────────────────────
 
 ipcMain.handle("get-usage", () => usageData);
@@ -620,14 +690,23 @@ function applyUsageData(data) {
 ipcMain.handle("refresh", async () => {
   applyUsageData(await fetchUsageAndStats());
   await updateTrayTitle();
-  if (popupWindow && !popupWindow.isDestroyed()) {
-    popupWindow.webContents.send("usage-update", usageData);
-  }
+  broadcastUsageUpdate();
   return usageData;
 });
 
 ipcMain.handle("close-popup", () => {
   if (popupWindow) popupWindow.hide();
+});
+
+ipcMain.handle("wizard-get-login-item", () => app.getLoginItemSettings().openAtLogin);
+
+ipcMain.handle("wizard-set-login-item", (_, enabled) => {
+  app.setLoginItemSettings({ openAtLogin: enabled });
+});
+
+ipcMain.handle("wizard-finish", () => {
+  markSetupComplete();
+  if (wizardWindow && !wizardWindow.isDestroyed()) wizardWindow.close();
 });
 
 // ─── App lifecycle ───────────────────────────────────────────────────────────
@@ -642,6 +721,8 @@ app.whenReady().then(async () => {
   tray.setToolTip("Claude Tray");
 
   const contextMenu = Menu.buildFromTemplate([
+    { label: "Run Setup Wizard…", click: () => createWizardWindow() },
+    { type: "separator" },
     { label: "Quit Claude Tray", click: () => app.quit() },
   ]);
 
@@ -649,6 +730,7 @@ app.whenReady().then(async () => {
   tray.on("right-click", () => tray.popUpContextMenu(contextMenu));
 
   createPopupWindow();
+  if (!isSetupComplete()) createWizardWindow();
 
   // Wait for the popup page to load so canvas icon generation works
   await new Promise((resolve) => {
@@ -659,14 +741,13 @@ app.whenReady().then(async () => {
   // Initial fetch
   applyUsageData(await fetchUsageAndStats());
   await updateTrayTitle();
+  broadcastUsageUpdate(); // wizard's "Checking Claude Code" step may already be open
 
   // Poll every 5 minutes
   pollInterval = setInterval(async () => {
     applyUsageData(await fetchUsageAndStats());
     await updateTrayTitle();
-    if (popupWindow && popupWindow.isVisible()) {
-      popupWindow.webContents.send("usage-update", usageData);
-    }
+    broadcastUsageUpdate();
   }, 5 * 60 * 1000);
 });
 
