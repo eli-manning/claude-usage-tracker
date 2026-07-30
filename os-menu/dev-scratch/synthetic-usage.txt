@@ -1,0 +1,34 @@
+Settings  Status   Config   Usage   Stats
+Session
+Total cost:            $0.3294
+Total duration (API):  44s
+Total duration (wall): 15m 45s
+Total code changes:    0 lines added, 0 lines removed
+Usage by model:
+    claude-haiku-4-5:  544 input, 15 output, 0 cache read, 0 cache write ($0.0006)
+    claude-sonnet-5:  526 input, 2.2k output, 488.9k cache read, 24.7k cache write ($0.3288)
+Current session
+19% used
+Resets 9:20pm (America/Los_Angeles)
+Current week (all models)
+63% used
+Resets Jul 30 at 10pm (America/Los_Angeles)
++50% weekly limits promo through Aug 19 · clau.de/cc-50-promo
+What's contributing to your limits usage?
+Approximate, based on local sessions on this machine — does not include other devices or claude.ai
+Last 24h · these are independent characteristics of your usage, not a breakdown
+99% of your usage came from sessions active for 8+ hours
+These are often background/loop sessions. Continuous usage can add up quickly
+so make sure it is intentional.
+95% of your usage was at >150k context
+Longer sessions are more expensive even when cached. /compact mid-task, /clear
+when switching to new tasks.
+Skills                    % of usage
+/wiss                            3%
+/ui-ux-pro-max                   1%
+MCP servers                % of usage
+claude-in-chrome                 1%
+d to day · w to week
+Usage credits
+93% used
+$37.27 / $40.00 spent · Resets Aug 1 (America/Los_Angeles)
