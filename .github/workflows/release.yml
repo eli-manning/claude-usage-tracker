@@ -1,0 +1,84 @@
+name: Release
+
+# Fires on version tags only (e.g. `git tag v1.0.3 && git push --tags`) —
+# ordinary pushes to main don't build installers or touch releases.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: os-menu
+        run: npm install
+
+      - name: Build installer
+        working-directory: os-menu
+        run: npm run build:win
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Claude-Tray-Windows-x64
+          path: os-menu/dist/*.exe
+
+      # Runs first so it creates the release; build-mac (which needs: this
+      # job) then uploads its asset to the same release instead of both
+      # jobs racing to create it in parallel.
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          files: os-menu/dist/*.exe
+
+  build-mac:
+    runs-on: macos-latest
+    needs: build-win
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: os-menu
+        run: npm install
+
+      - name: Build installer
+        working-directory: os-menu
+        # No Developer ID cert configured — build unsigned, matching the
+        # existing local build (README already documents the macOS
+        # "unverified developer" Gatekeeper prompt users see on first launch).
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npm run build:mac
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Claude-Tray-macOS-arm64
+          path: os-menu/dist/*.dmg
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          files: os-menu/dist/*.dmg
