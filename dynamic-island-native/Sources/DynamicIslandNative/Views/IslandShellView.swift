@@ -31,7 +31,8 @@ struct IslandShellView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            MenuBarChromeView(claude: usage.claude, panelSize: canvasSize, isExpanded: isExpanded)
+            MenuBarChromeView(claude: usage.claude, antigravity: usage.antigravity, providerStatus: usage.providers,
+                              currentProviderIdx: currentProviderIdx, panelSize: canvasSize, isExpanded: isExpanded)
 
             // No separate bump shape — that was a second black rectangle
             // that only existed while expanded, which is exactly what read

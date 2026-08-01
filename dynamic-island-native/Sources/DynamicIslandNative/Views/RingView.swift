@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Small-scale fan geometry — anchored so `cy` sits just under the bump's
 /// bottom edge (passed in by the caller), not a fixed frame origin. Kept
@@ -25,6 +26,13 @@ struct RingGeometry {
     static let arcEnd: Double = 177
     static let gapDeg: Double = 4
     static let selectedWidthDeg: Double = 48
+    // Ceiling on how wide a single unselected wedge can get. Claude's fan
+    // (3-5 items) never hits this — dividing the leftover arc among 2-4
+    // unselected items naturally lands well under it, so that fan's layout
+    // is untouched. It only kicks in for small fans like Antigravity's 2
+    // stats, where dividing leftover space among just 1 unselected item let
+    // it balloon to ~120° next to a 48° selected wedge.
+    static let maxUnselectedWidthDeg: Double = 55
 
     // MARK: Hub
     static let hubRadius: CGFloat = 35
@@ -91,25 +99,66 @@ func buildWedges(bubbles: [Bubble], selectedIdx: Int, rInner: CGFloat, rOuterBas
     let span = g.arcEnd - g.arcStart
     let hasSelection = rOuterSelected > rOuterBase
 
-    // Two distinct layouts, not one formula stretched to cover both: with a
-    // highlighted member, one slot gets `selectedWidthDeg` and the rest
-    // split what's left; with no highlighted member (the provider ring),
-    // every item just divides the *entire* span evenly. Reusing the
-    // "reserve a selected slot" math for the no-selection case was the bug —
-    // it silently reserved room for a selected wedge that was never drawn,
-    // leaving the ring short of the full arc and asymmetric.
-    let selWidth = g.selectedWidthDeg
-    let evenWidth: Double = hasSelection
-        ? (n > 1 ? (span - selWidth - g.gapDeg * (n - 1)) / (n - 1) : span)
-        : (span - g.gapDeg * (n - 1)) / n
+    guard hasSelection else {
+        // No highlighted member (the provider ring) — every item just
+        // divides the entire span evenly. Always exactly 3 items in
+        // practice, so this always fills the arc.
+        let evenWidth = (span - g.gapDeg * (n - 1)) / n
+        var cursor = g.arcStart
+        return bubbles.enumerated().map { i, b in
+            let start = cursor
+            let end = start + evenWidth
+            cursor = end + g.gapDeg
+            return WedgeLayout(bubble: b, index: i, isSelected: false, startDeg: start, endDeg: end,
+                                rInner: rInner, rOuter: rOuterBase)
+        }
+    }
 
-    var cursor = g.arcStart
+    // With a highlighted member, the selected wedge is anchored to the
+    // arc's exact center angle — not "whichever array index happens to be
+    // in the middle" — so it stays visually centered whether the fan has
+    // an even or odd item count. An odd count with the selected item at
+    // the true middle index (Claude's 5-stat fan) makes those two things
+    // coincide, which is why that layout is unchanged from before; an even
+    // count (Antigravity's 2 stats) has no middle index at all, so
+    // centering "the whole block" like before left the selection off to
+    // one side instead of centered.
+    let selWidth = g.selectedWidthDeg
+    // Capped so a small fan's leftover space can't balloon a single
+    // unselected wedge (Claude's fan never hits this cap). A hair under
+    // the true max (half the arc, minus half the selected wedge and one
+    // gap) so a lone neighbor can't overshoot the arc's edge.
+    let naturalEvenWidth = n > 1 ? (span - selWidth - g.gapDeg * (n - 1)) / (n - 1) : span
+    let evenWidth = min(naturalEvenWidth, g.maxUnselectedWidthDeg)
+
+    let centerDeg = (g.arcStart + g.arcEnd) / 2
+    var spans = [Int: (Double, Double)]()
+    spans[selectedIdx] = (centerDeg - selWidth / 2, centerDeg + selWidth / 2)
+
+    var leftCursor = centerDeg - selWidth / 2 - g.gapDeg
+    if selectedIdx > 0 {
+        for i in stride(from: selectedIdx - 1, through: 0, by: -1) {
+            let end = leftCursor
+            let start = end - evenWidth
+            spans[i] = (start, end)
+            leftCursor = start - g.gapDeg
+        }
+    }
+
+    var rightCursor = centerDeg + selWidth / 2 + g.gapDeg
+    let lastIdx = Int(n) - 1
+    if selectedIdx < lastIdx {
+        for i in (selectedIdx + 1)...lastIdx {
+            let start = rightCursor
+            let end = start + evenWidth
+            spans[i] = (start, end)
+            rightCursor = end + g.gapDeg
+        }
+    }
+
     return bubbles.enumerated().map { i, b in
-        let isSelected = hasSelection && i == selectedIdx
-        let width = isSelected ? selWidth : evenWidth
-        let start = cursor
-        let end = start + width
-        cursor = end + g.gapDeg
+        let isSelected = i == selectedIdx
+        let (start, end) = spans[i]!
         return WedgeLayout(bubble: b, index: i, isSelected: isSelected, startDeg: start, endDeg: end,
                             rInner: rInner, rOuter: isSelected ? rOuterSelected : rOuterBase)
     }
@@ -130,6 +179,13 @@ struct RingView: View {
     // at the wrong bubble.
     @State private var selectedStatID: String = "session"
     @State private var isHoveringHub = false
+    // Only meaningful for an even-sized fan (odd fans have one unambiguous
+    // middle index — see `centeredOrder`). With exactly 2 items there's no
+    // way to tell "rotate forward" from "rotate backward" from the fixed
+    // order alone, so without this every swap would snap the outgoing item
+    // back to the same fixed side instead of swinging like a pendulum.
+    // Toggled once per genuine selection change in `selectOuter`.
+    @State private var centerSlotParity = false
 
     private var isClaudeActive: Bool { currentProviderIdx == 0 }
     private var activeProvider: Provider { Provider.all[currentProviderIdx] }
@@ -142,39 +198,86 @@ struct RingView: View {
     // constants to happen to line up.
     private let cy: CGFloat = 0
 
-    /// The outer ring's content — the active provider's own stats. Only
-    /// Claude has real stats to show right now; the others don't get a
-    /// lone giant "selected" wedge just because they're the only bubble in
-    /// the ring (that's what made switching to Cursor/Codex/Gemini look so
-    /// lopsided — three tiny provider icons next to one blown-up wedge). The
-    /// hub itself already shows which provider is active via its color and
+    /// The outer ring's content — the active provider's own stats, if it
+    /// has any wired up yet. Providers without real data don't get a lone
+    /// giant "selected" wedge just because they're the only bubble in the
+    /// ring (that's what made switching to Cursor/Codex look so lopsided —
+    /// three tiny provider icons next to one blown-up wedge); the hub
+    /// itself already shows which provider is active via its color and
     /// logo, so there's nothing else to render out here until a provider
-    /// has real stats wired up.
+    /// has real stats.
     private var outerBubbles: [Bubble] {
-        guard isClaudeActive else { return [] }
-        return centeredOrder(Bubble.claudeMetrics(usage.claude))
+        let metrics: [Bubble]
+        if isClaudeActive {
+            metrics = Bubble.claudeMetrics(usage.claude)
+        } else if activeProvider.id == "antigravity", let g = usage.antigravity, activeStatus.state == .loggedIn {
+            metrics = Bubble.antigravityMetrics(g, color: activeProvider.color)
+        } else {
+            metrics = []
+        }
+        guard !metrics.isEmpty else { return [] }
+        return centeredOrder(metrics)
     }
 
-    /// Session centered, Weekly to its left, Credits to its right, and
-    /// whatever else is available pushed out to the far sides — rather than
-    /// the raw left-to-right order `claudeMetrics` returns them in.
-    /// `buildWedges` lays its input out starting from `arcStart` (the
-    /// *right* edge of the fan) and works leftward, so the array here needs
-    /// to be right-to-left already: [farRight, right, center, left, farLeft].
+    /// Fixed circular neighbor order per provider — session's neighbors are
+    /// always weekly and credits, credits' neighbors are always session and
+    /// skills, etc. — independent of which one is currently centered.
+    /// [farRight, ..., farLeft] to match `buildWedges`' expected input
+    /// order (it lays out starting from `arcStart`, the *right* edge of
+    /// the fan, and works leftward).
+    private static let claudeStatOrder = ["stats", "credits", "session", "weekly", "skills"]
+    private static let antigravityStatOrder = ["fiveHour", "weekly"]
+
+    private var activeStatOrder: [String] {
+        isClaudeActive ? Self.claudeStatOrder : Self.antigravityStatOrder
+    }
+
+    /// Rotates the fixed circular order so the selected stat lands in the
+    /// center slot — a wheel, not a reshuffle: every item keeps the same
+    /// neighbors it always had, just which one faces front changes. With
+    /// `session` selected (Claude's default) this reduces to the original
+    /// fixed [stats, credits, session, weekly, skills] layout exactly.
+    ///
+    /// An odd-sized fan has one unambiguous middle index, so it always
+    /// rotates the same way. An even-sized fan (Antigravity's 2 stats) has
+    /// two equally-valid "center" candidates — `(n-1)/2` and `n/2` — and
+    /// picking the same one every time makes every swap snap the outgoing
+    /// item back to the same fixed side instead of swinging like a
+    /// pendulum. `centerSlotParity` alternates between the two candidates
+    /// once per genuine selection change (see `selectOuter`), which is
+    /// exactly what makes the outgoing item swing to the opposite side each
+    /// time. For an odd n both candidates are equal, so this is a no-op —
+    /// Claude's fan is unaffected either way.
     private func centeredOrder(_ bubbles: [Bubble]) -> [Bubble] {
-        func find(_ id: String) -> Bubble? { bubbles.first { $0.id == id } }
-        return [find("stats"), find("credits"), find("session"), find("weekly"), find("skills")]
-            .compactMap { $0 }
+        let byID = Dictionary(uniqueKeysWithValues: bubbles.map { ($0.id, $0) })
+        let available = activeStatOrder.filter { byID[$0] != nil }
+        guard !available.isEmpty else { return [] }
+        let n = available.count
+        let centerSlot = centerSlotParity ? n / 2 : (n - 1) / 2
+        let selIdx = available.firstIndex(of: selectedStatID) ?? centerSlot
+        return (0..<n).map { offset in
+            let idx = ((selIdx - centerSlot + offset) % n + n) % n
+            return byID[available[idx]]!
+        }
     }
 
     var body: some View {
         let g = RingGeometry.self
-        let outer = outerBubbles
-        let outerSelectedIdx = outer.firstIndex(where: { $0.id == selectedStatID }) ?? 0
-        let outerWedges = buildWedges(bubbles: outer, selectedIdx: outerSelectedIdx,
-                                       rInner: g.rInner, rOuterBase: g.rOuter, rOuterSelected: g.rOuterSelected)
+        let allProviderBubbles = Bubble.providers(claude: usage.claude, providerStatus: usage.providers, antigravity: usage.antigravity)
 
-        let allProviderBubbles = Bubble.providers(claude: usage.claude, providerStatus: usage.providers)
+        // A provider with real data (Claude, or Antigravity once signed in)
+        // gets the full multi-wedge stat fan; everyone else gets one
+        // centered wedge carrying its status message (not installed / not
+        // signed in) instead of a lone giant "selected" wedge sized for
+        // data it doesn't have.
+        let outer = outerBubbles
+        let hasStats = !outer.isEmpty
+        let outerSelectedIdx = outer.firstIndex(where: { $0.id == selectedStatID }) ?? 0
+        let outerWedges: [WedgeLayout] = hasStats
+            ? buildWedges(bubbles: outer, selectedIdx: outerSelectedIdx,
+                           rInner: g.rInner, rOuterBase: g.rOuter, rOuterSelected: g.rOuterSelected)
+            : [centeredWedge(allProviderBubbles[currentProviderIdx], rInner: g.rInner, rOuter: g.rOuterSelected)]
+
         let providerBubbles = allProviderBubbles.enumerated().filter { $0.offset != currentProviderIdx }.map(\.element)
         let innerWedges = isHoveringHub
             ? buildWedges(bubbles: providerBubbles, selectedIdx: -1,
@@ -184,50 +287,63 @@ struct RingView: View {
         ZStack {
             ForEach(outerWedges) { w in
                 wedgeShape(w)
-                    .onTapGesture { selectOuter(w) }
+                    .onTapGesture { if hasStats { selectOuter(w) } else { handleStatusTap() } }
+                    .help(hasStats ? "" : activeStatus.message(installHint: activeProvider.hint))
                     .transition(.scale(scale: 0.6, anchor: .top).combined(with: .opacity))
             }
             .compositingGroup()
 
-            // Icon sits in its own inner band, well clear of the two
-            // curved-text bands further out — value in the middle, label
-            // right against the percent arc — so nothing has to fight for
-            // the same radius regardless of selection state.
-            ForEach(outerWedges) { w in
-                wedgeContent(w)
-                    .position(w.contentPos(cx: cx, cy: cy, radiusFraction: 0.24))
-                    .onTapGesture { selectOuter(w) }
-            }
+            if hasStats {
+                // Icon sits in its own inner band, well clear of the two
+                // curved-text bands further out — value in the middle,
+                // label right against the percent arc — so nothing has to
+                // fight for the same radius regardless of selection state.
+                ForEach(outerWedges) { w in
+                    wedgeContent(w)
+                        .position(w.contentPos(cx: cx, cy: cy, radiusFraction: 0.24))
+                        .onTapGesture { selectOuter(w) }
+                }
 
-            // Value readout, curved — same band for every wedge (as a
-            // fraction of that wedge's own rInner...rOuter), just bigger and
-            // brighter when selected.
-            ForEach(outerWedges) { w in
-                CurvedText(
-                    text: w.bubble.big,
-                    radius: w.rInner + (w.rOuter - w.rInner) * 0.6,
-                    centerDeg: (w.startDeg + w.endDeg) / 2,
-                    fontSize: w.isSelected ? 15 : 10,
-                    weight: .bold,
-                    color: .white
-                )
-                .position(x: cx, y: cy)
-                .allowsHitTesting(false)
-            }
+                // Value readout, curved — same band for every wedge (as a
+                // fraction of that wedge's own rInner...rOuter), just bigger
+                // and brighter when selected.
+                ForEach(outerWedges) { w in
+                    CurvedText(
+                        text: w.bubble.big,
+                        radius: w.rInner + (w.rOuter - w.rInner) * 0.6,
+                        centerDeg: (w.startDeg + w.endDeg) / 2,
+                        fontSize: w.isSelected ? 15 : 10,
+                        weight: .bold,
+                        color: .white
+                    )
+                    .position(x: cx, y: cy)
+                    .allowsHitTesting(false)
+                }
 
-            // Name, curved along the wedge's outer edge, just inside its
-            // percent-progress arc — selected or not; it should never snap
-            // back to flat text just because a wedge became selected.
-            ForEach(outerWedges) { w in
-                CurvedText(
-                    text: w.bubble.label.uppercased(),
-                    radius: w.rOuter - 6,
-                    centerDeg: (w.startDeg + w.endDeg) / 2,
-                    fontSize: w.isSelected ? 9.5 : 8,
-                    color: w.isSelected ? .white.opacity(0.85) : .white.opacity(0.65)
-                )
-                .position(x: cx, y: cy)
-                .allowsHitTesting(false)
+                // Name, curved along the wedge's outer edge, just inside its
+                // percent-progress arc — selected or not; it should never
+                // snap back to flat text just because a wedge became
+                // selected.
+                ForEach(outerWedges) { w in
+                    CurvedText(
+                        text: w.bubble.label.uppercased(),
+                        radius: w.rOuter - 6,
+                        centerDeg: (w.startDeg + w.endDeg) / 2,
+                        fontSize: w.isSelected ? 9.5 : 8,
+                        color: w.isSelected ? .white.opacity(0.85) : .white.opacity(0.65)
+                    )
+                    .position(x: cx, y: cy)
+                    .allowsHitTesting(false)
+                }
+            } else {
+                // No real stats to lay out along an arc yet — an icon +
+                // one-word action ("Install" / "Sign In") instead of a
+                // paragraph. The full sentence lives in the `.help()`
+                // tooltip on the wedge itself; tapping either runs the
+                // action directly (`handleStatusTap`).
+                ForEach(outerWedges) { w in
+                    statusAction(w)
+                }
             }
 
             providerCluster(innerWedges: innerWedges)
@@ -253,6 +369,11 @@ struct RingView: View {
         .frame(width: g.width, height: g.height)
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: outer.count)
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: isHoveringHub)
+        // The wheel rotation itself — every wedge's angle shifts at once
+        // when the selected stat changes, so it needs its own trigger
+        // rather than relying on `outer.count`/`isHoveringHub` (neither of
+        // which changes when you just pick a different stat).
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: selectedStatID)
     }
 
     /// When the provider ring isn't showing, there's nothing occupying the
@@ -287,12 +408,33 @@ struct RingView: View {
                 .shadow(color: .black.opacity(0.6), radius: 6, y: 2)
                 .position(x: cx, y: cy)
 
-            // Icon only — no label here, the logo is recognizable enough on
-            // its own for provider switching.
+            // Icon only — no flat label here, the logo is recognizable
+            // enough on its own for provider switching.
             ForEach(innerWedges) { w in
                 iconOnlyWedgeContent(w)
                     .position(w.contentPos(cx: cx, cy: cy))
                     .onTapGesture { pickProvider(w.index) }
+            }
+
+            // Real quota, when a provider has any cached — curved along the
+            // wedge's own outer edge, just inset from it, same treatment
+            // (and same radius convention, `rOuter - 6`) as the outer stat
+            // wedges' curved *label* text, just smaller to fit this ring's
+            // thinner band. Lets you see every provider's usage at a glance
+            // in the picker itself, without switching to each one.
+            ForEach(innerWedges) { w in
+                if let pct = w.bubble.pct {
+                    CurvedText(
+                        text: "\(pct)%",
+                        radius: w.rOuter - 6,
+                        centerDeg: (w.startDeg + w.endDeg) / 2,
+                        fontSize: 6,
+                        weight: .bold,
+                        color: Format.statusColor(pct)
+                    )
+                    .position(x: cx, y: cy)
+                    .allowsHitTesting(false)
+                }
             }
 
             hub.position(x: cx, y: cy)
@@ -305,6 +447,8 @@ struct RingView: View {
     }
 
     private func selectOuter(_ w: WedgeLayout) {
+        guard w.bubble.id != selectedStatID else { return }
+        centerSlotParity.toggle()
         selectedStatID = w.bubble.id
     }
 
@@ -315,6 +459,7 @@ struct RingView: View {
         guard providerAllIndex < filtered.count else { return }
         currentProviderIdx = filtered[providerAllIndex].offset
         selectedStatID = "session"
+        centerSlotParity = false
     }
 
     private func wedgeShape(_ w: WedgeLayout) -> some View {
@@ -377,6 +522,72 @@ struct RingView: View {
             iconView(w.bubble.icon, size: diameter * 0.6, tint: .white)
         }
         .frame(width: diameter, height: diameter)
+    }
+
+    /// One wedge, centered on the fan's own midpoint rather than positioned
+    /// by `buildWedges`'s "reserve a selected slot among N items" math —
+    /// that math is for dividing several items around the arc, not for
+    /// placing a single standalone wedge, which it would otherwise shove
+    /// off to one side (starting at `arcStart`).
+    private func centeredWedge(_ bubble: Bubble, rInner: CGFloat, rOuter: CGFloat, widthDeg: Double = 72) -> WedgeLayout {
+        let g = RingGeometry.self
+        let centerDeg = (g.arcStart + g.arcEnd) / 2
+        return WedgeLayout(bubble: bubble, index: 0, isSelected: true,
+                            startDeg: centerDeg - widthDeg / 2, endDeg: centerDeg + widthDeg / 2,
+                            rInner: rInner, rOuter: rOuter)
+    }
+
+    private var activeStatus: ProviderStatus {
+        usage.providers[activeProvider.id] ?? ProviderStatus(state: .notInstalled)
+    }
+
+    /// Icon + one-word action for the "provider isn't wired up yet" wedge.
+    /// The full sentence lives in the `.help()` tooltip on the wedge shape
+    /// itself (see `body`) — curved per-character text only works for
+    /// short single values like "82%", not full sentences.
+    private func statusAction(_ w: WedgeLayout) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: activeStatus.actionIcon)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.white)
+            Text(activeStatus.actionLabel.uppercased())
+                .font(.system(size: 10.5, weight: .bold))
+                .foregroundColor(.white.opacity(0.9))
+        }
+        .position(w.contentPos(cx: cx, cy: cy, radiusFraction: 0.58))
+        .allowsHitTesting(false)
+    }
+
+    /// Not installed → a real Terminal window running its one-line install
+    /// command if it has one (e.g. `npm i -g @openai/codex`), otherwise the
+    /// CLI's own install page in the browser. Installed but not signed in
+    /// (or last fetch errored) → a real Terminal window running its login
+    /// command, since these are interactive OAuth flows a background
+    /// `Process` can't drive.
+    private func handleStatusTap() {
+        switch activeStatus.state {
+        case .notInstalled:
+            if let command = activeProvider.installCommand {
+                runInTerminal(command)
+            } else if let urlString = activeProvider.installURL, let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+            }
+        case .installed, .error:
+            if let command = activeProvider.loginCommand {
+                runInTerminal(command)
+            }
+        case .loggedIn:
+            break
+        }
+    }
+
+    private func runInTerminal(_ command: String) {
+        let escaped = command.replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "tell application \"Terminal\"\nactivate\ndo script \"\(escaped)\"\nend tell"
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+        try? task.run()
     }
 
     private func wedgeContent(_ w: WedgeLayout) -> some View {

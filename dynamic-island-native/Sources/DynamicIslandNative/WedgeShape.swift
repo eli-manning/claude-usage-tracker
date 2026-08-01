@@ -11,6 +11,21 @@ struct WedgeShape: Shape {
     var startDeg: Double
     var endDeg: Double
 
+    /// `cx`/`cy`/`rInner` are fixed per ring layer; `startDeg`/`endDeg`
+    /// (which wedge occupies which angle) and `rOuter` (selected vs. not)
+    /// are what actually change between renders — e.g. when the stat wheel
+    /// rotates a new wedge to center. Without this, the pie-slice geometry
+    /// would just snap between frames instead of sweeping smoothly, even
+    /// though the `.position()`-based content around it animates fine.
+    var animatableData: AnimatablePair<AnimatablePair<Double, Double>, CGFloat> {
+        get { AnimatablePair(AnimatablePair(startDeg, endDeg), rOuter) }
+        set {
+            startDeg = newValue.first.first
+            endDeg = newValue.first.second
+            rOuter = newValue.second
+        }
+    }
+
     func path(in rect: CGRect) -> Path {
         func pt(_ r: CGFloat, _ deg: Double) -> CGPoint {
             let rad = deg * .pi / 180
@@ -37,6 +52,11 @@ struct ArcShape: Shape {
     var r: CGFloat
     var startDeg: Double
     var endDeg: Double
+
+    var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(startDeg, endDeg) }
+        set { (startDeg, endDeg) = (newValue.first, newValue.second) }
+    }
 
     func path(in rect: CGRect) -> Path {
         var path = Path()

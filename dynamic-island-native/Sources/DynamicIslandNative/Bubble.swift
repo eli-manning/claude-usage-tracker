@@ -17,14 +17,30 @@ struct Bubble: Identifiable {
     var big: String   // headline value shown in the hub when selected
     var sub: String?  // reset time / spend / hint, shown in the hub
 
-    static func providers(claude: ClaudeUsage, providerStatus: [String: ProviderStatus]) -> [Bubble] {
+    /// `antigravity` is `UsageService`'s cached last-known quota — kept
+    /// around independent of whichever provider is currently active/shown,
+    /// so switching over to it (or just glancing at its provider-picker
+    /// wedge) shows real numbers immediately instead of a blank state while
+    /// a fresh fetch runs.
+    static func providers(claude: ClaudeUsage, providerStatus: [String: ProviderStatus], antigravity: GeminiUsage?) -> [Bubble] {
         Provider.all.map { p in
-            let installed = p.id == "claude" ? true : (providerStatus[p.id]?.installed ?? false)
-            let hint = p.id == "claude" ? nil : (installed ? "Detected — not wired up yet." : "Not installed. \(p.hint)")
+            if p.id == "claude" {
+                return Bubble(id: p.id, label: p.name, color: p.color, icon: .svg(p.icon),
+                              pct: claude.session,
+                              big: claude.session != nil ? "\(claude.session!)%" : "—",
+                              sub: claude.errorType == "offline" ? "Offline" : nil)
+            }
+            let status = providerStatus[p.id] ?? ProviderStatus(state: .notInstalled)
+            if p.id == "antigravity", status.state == .loggedIn, let g = antigravity {
+                // Same "right now" convention as Claude's session figure —
+                // the 5-hour window is Antigravity's rolling short-term
+                // quota, falling back to weekly if that's all that parsed.
+                let pct = g.fiveHourPct ?? g.weeklyPct
+                return Bubble(id: p.id, label: p.name, color: p.color, icon: .svg(p.icon),
+                              pct: pct, big: pct != nil ? "\(pct!)%" : "—", sub: nil)
+            }
             return Bubble(id: p.id, label: p.name, color: p.color, icon: .svg(p.icon),
-                          pct: p.id == "claude" ? claude.session : nil,
-                          big: p.id == "claude" ? (claude.session != nil ? "\(claude.session!)%" : "—") : "",
-                          sub: hint)
+                          pct: nil, big: "", sub: status.message(installHint: p.hint))
         }
     }
 
@@ -58,6 +74,24 @@ struct Bubble: Identifiable {
             list.append(Bubble(id: "stats", label: "All-time", color: claudeOrange, icon: .symbol("clock.fill"),
                                 pct: nil, big: s.sessions != nil ? "\(s.sessions!)" : "—",
                                 sub: s.favoriteModel.map { "Favorite: \($0)" }))
+        }
+        return list
+    }
+
+    /// Antigravity's quota fan — just the two limits the `agy` CLI's own
+    /// `/usage` panel reports (5-hour, weekly), both already converted from
+    /// percent-remaining to percent-used. `color` is the caller's own
+    /// `Provider.color` rather than a constant here, so this can't drift
+    /// from `Provider.all`'s brand color the way a hardcoded hex would.
+    static func antigravityMetrics(_ g: GeminiUsage, color: Color) -> [Bubble] {
+        var list: [Bubble] = []
+        if let pct = g.fiveHourPct {
+            list.append(Bubble(id: "fiveHour", label: "5 Hour", color: color, icon: .symbol("clock.fill"),
+                                pct: pct, big: "\(pct)%", sub: nil))
+        }
+        if let pct = g.weeklyPct {
+            list.append(Bubble(id: "weekly", label: "Weekly", color: color, icon: .symbol("calendar"),
+                                pct: pct, big: "\(pct)%", sub: nil))
         }
         return list
     }

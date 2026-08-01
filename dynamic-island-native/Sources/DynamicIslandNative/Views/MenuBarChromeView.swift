@@ -15,8 +15,20 @@ import SwiftUI
 /// disappear); it never slides or jumps.
 struct MenuBarChromeView: View {
     let claude: ClaudeUsage
+    let antigravity: GeminiUsage?
+    let providerStatus: [String: ProviderStatus]
+    let currentProviderIdx: Int
     let panelSize: CGSize
     let isExpanded: Bool
+
+    /// The pill always reflects whichever provider is currently selected in
+    /// the ring (hover-picked), not always Claude — so switching providers
+    /// while expanded is still reflected once it collapses back down.
+    private var activeProvider: Provider { Provider.all[currentProviderIdx] }
+    private var isClaudeActive: Bool { activeProvider.id == "claude" }
+    private var activeStatus: ProviderStatus {
+        providerStatus[activeProvider.id] ?? ProviderStatus(state: .notInstalled)
+    }
 
     private var barHeight: CGFloat { NotchGeometry.info().reservedTopHeight }
     private var hasNotch: Bool { NotchGeometry.info().hasNotch }
@@ -26,11 +38,19 @@ struct MenuBarChromeView: View {
     private var barCenterX: CGFloat { panelSize.width / 2 }
     private var barWidth: CGFloat { isExpanded ? notchRect.width : restBarWidth }
 
-    /// Centers of the left/right flank slots at rest — derived from the
-    /// notch rect so the badge/percentage always sit centered in whatever
-    /// room is actually available on each side.
-    private var leftCenterX: CGFloat { notchRect.minX / 2 }
-    private var rightCenterX: CGFloat { (notchRect.maxX + panelSize.width) / 2 }
+    /// Centers of the left/right flank slots at rest — a *fixed* offset
+    /// from the bar's own center (constants only, no `panelSize`), not
+    /// re-derived from the live panel width. `panelSize` lags `isExpanded`
+    /// by ~0.46s on collapse (the window's hit-test footprint intentionally
+    /// stays large until the collapse animation finishes), so a
+    /// panelSize-relative formula would place these at the wide expanded
+    /// window's edges for that whole window, then jump inward once
+    /// `canvasSize` finally shrinks — the "shoots out to the sides" glitch.
+    /// A fixed offset from center is correct the instant `isExpanded` flips,
+    /// independent of how large the window still is underneath it.
+    private var flankOffset: CGFloat { NotchGeometry.info().notchWidth / 2 + NotchGeometry.Layout.flankWidth / 2 }
+    private var leftCenterX: CGFloat { barCenterX - flankOffset }
+    private var rightCenterX: CGFloat { barCenterX + flankOffset }
 
     var body: some View {
         ZStack {
@@ -63,8 +83,8 @@ struct MenuBarChromeView: View {
 
     private var badge: some View {
         ZStack {
-            Circle().fill(Color(hex: "D97757").opacity(0.3))
-            BrandIconView(d: BrandIcon.claude, size: 12)
+            Circle().fill(activeProvider.color.opacity(0.3))
+            BrandIconView(d: activeProvider.icon, size: 12)
         }
         .frame(width: 19, height: 19)
         .overlay(
@@ -75,26 +95,49 @@ struct MenuBarChromeView: View {
         )
     }
 
+    /// Antigravity's "right now" figure for the pill, same role Claude's
+    /// `session` plays there — the 5-hour window is Antigravity's rolling
+    /// short-term quota, same as Claude's session is its rolling short-term
+    /// quota (as opposed to the weekly figure, which is the longer-window
+    /// one for both).
+    private var antigravityPillPct: Int? {
+        guard activeProvider.id == "antigravity", activeStatus.state == .loggedIn else { return nil }
+        return antigravity?.fiveHourPct ?? antigravity?.weeklyPct
+    }
+
     private var dotColor: Color {
-        if claude.session == nil && claude.weekly == nil { return Color(hex: "555555") }
-        return Format.statusHex(max(claude.session ?? 0, claude.weekly ?? 0))
+        if isClaudeActive {
+            if claude.session == nil && claude.weekly == nil { return Color(hex: "555555") }
+            return Format.statusHex(max(claude.session ?? 0, claude.weekly ?? 0))
+        }
+        if let pct = antigravityPillPct {
+            return Format.statusHex(pct)
+        }
+        if case .error = activeStatus.state { return Color(hex: "d1685f") }
+        return Color(hex: "555555")
     }
 
     @ViewBuilder private var percentageLabel: some View {
-        if let session = claude.session {
+        if isClaudeActive, let session = claude.session {
             Text("\(session)%")
                 .font(.system(size: 13, weight: .bold))
                 .foregroundColor(Format.statusColor(session))
                 .fixedSize()
+        } else if let pct = antigravityPillPct {
+            Text("\(pct)%")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(Format.statusColor(pct))
+                .fixedSize()
         } else {
-            Text(loadingLabel)
+            Text(compactLabel)
                 .font(.system(size: 10.5, weight: .medium))
                 .foregroundColor(.white.opacity(0.45))
                 .fixedSize()
         }
     }
 
-    private var loadingLabel: String {
+    private var compactLabel: String {
+        guard isClaudeActive else { return activeStatus.shortLabel }
         switch claude.errorType {
         case "offline": return "offline"
         case "auth": return "sign in"

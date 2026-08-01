@@ -6,15 +6,31 @@ struct Provider: Identifiable {
     var color: Color
     var icon: String
     var hint: String = ""
+    /// What "not installed" runs in a real Terminal window, for CLIs
+    /// installable with a single package-manager command — preferred over
+    /// `installURL` when both are set, since it actually installs the thing
+    /// instead of just handing the user a docs page to read and act on
+    /// themselves.
+    var installCommand: String? = nil
+    /// Where "not installed" sends the user when there's no one-line
+    /// `installCommand` — the CLI's own install page.
+    var installURL: String? = nil
+    /// What "installed, not signed in" runs in a real Terminal window —
+    /// these CLIs' auth flows are interactive, so a background `Process`
+    /// can't drive them; the tap has to hand off to an actual terminal.
+    var loginCommand: String? = nil
 
     static let all: [Provider] = [
         Provider(id: "claude", name: "Claude", color: Color(hex: "D97757"), icon: BrandIcon.claude),
-        Provider(id: "gemini", name: "Gemini", color: Color(hex: "4E8CFF"), icon: BrandIcon.gemini,
-                 hint: "Run `gemini`, then `/stats model` for usage."),
+        Provider(id: "antigravity", name: "Antigravity", color: Color(hex: "4E8CFF"), icon: BrandIcon.gemini,
+                 hint: "Run `agy`, then sign in with Google.",
+                 installCommand: "brew install --cask antigravity-cli", loginCommand: "agy"),
         Provider(id: "codex", name: "Codex", color: Color(hex: "3ECF8E"), icon: BrandIcon.codex,
-                 hint: "Run `codex`, then `/status` for usage."),
+                 hint: "Run `codex`, then `/status` for usage.",
+                 installCommand: "npm i -g @openai/codex", loginCommand: "codex"),
         Provider(id: "cursor", name: "Cursor", color: Color(hex: "8B7CF6"), icon: BrandIcon.cursor,
-                 hint: "Run `cursor-agent`, then `/usage` for usage."),
+                 hint: "Run `cursor-agent`, then `/usage` for usage.",
+                 installCommand: "curl -fsSL https://cursor.com/install | bash", loginCommand: "cursor-agent"),
     ]
 }
 
