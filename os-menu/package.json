@@ -5,6 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "dev:mac": "electron-builder --mac --dir && open 'dist/mac-arm64/Claude Tray.app'",
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win --x64",
     "build:linux": "electron-builder --linux"
@@ -25,6 +26,10 @@
       {
         "from": "pty-wrapper.py",
         "to": "pty-wrapper.py"
+      },
+      {
+        "from": "agy-pty-wrapper.py",
+        "to": "agy-pty-wrapper.py"
       }
     ],
     "mac": {
@@ -50,9 +55,9 @@
     }
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.3",
-    "electron": "^29.0.0",
-    "electron-builder": "^24.0.0"
+    "@electron/rebuild": "^4.2.0",
+    "electron": "^39.0.0",
+    "electron-builder": "^26.0.0"
   },
   "dependencies": {
     "node-pty": "^1.1.0"

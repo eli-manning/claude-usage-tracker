@@ -56,6 +56,48 @@
     flex-shrink: 0;
   }
 
+  /* ── Provider switcher ── */
+  .provider-switcher {
+    display: flex;
+    gap: 4px;
+    padding: 9px 13px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .provider-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 6px 4px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: none;
+    cursor: pointer;
+    transition: all 0.1s;
+  }
+  .provider-tab:hover { background: var(--surface); }
+  .provider-tab.active { background: var(--surface); border-color: var(--border); }
+
+  .provider-tab-icon {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    opacity: 0.55;
+  }
+  .provider-tab.active .provider-tab-icon { opacity: 1; }
+
+  .provider-tab-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .provider-tab-dot.pulsing { animation: dotPulse 1.1s ease-in-out infinite; }
+  @keyframes dotPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
   .header-left { display: flex; flex-direction: column; gap: 1px; }
 
   .app-name {
@@ -336,34 +378,6 @@
   .error-msg { font-size: 12px; color: var(--muted); line-height: 1.55; }
   .error-msg.is-error { color: var(--red); }
   .error-cmd { font-size: 10px; color: var(--muted); opacity: 0.6; margin-top: 4px; }
-
-  /* ── Footer ── */
-  .footer {
-    padding: 7px 13px 11px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-shrink: 0;
-  }
-
-  .foot-text {
-    font-size: 10px;
-    color: var(--muted);
-    display: flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .pulse {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--green);
-    flex-shrink: 0;
-    animation: pulse 2s ease-in-out infinite;
-  }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 </style>
 </head>
 <body>
@@ -371,7 +385,7 @@
 
   <div class="header">
     <div class="header-left">
-      <div class="app-name">Claude Usage</div>
+      <div class="app-name" id="appName">Claude Usage</div>
       <div class="update-time" id="lastUpdated">fetching...</div>
     </div>
     <div class="header-btns">
@@ -380,27 +394,38 @@
     </div>
   </div>
 
-  <div id="main"></div>
+  <div class="provider-switcher" id="providerSwitcher"></div>
 
-  <div class="footer">
-    <div class="foot-text"><span class="pulse"></span>auto · 5 min</div>
-    <div class="foot-text" id="countdown"></div>
-  </div>
+  <div id="main"></div>
 
 </div>
 
 <script>
   let history = JSON.parse(localStorage.getItem('usageHistory') || '[]');
   let chartMode = 'weekly';
-  let currentData = null;
+  // { claude: <ClaudeUsage>, antigravity: <{fiveHourPct, weeklyPct, error, lastUpdated}>,
+  //   providers: { antigravity|codex|cursor: {state, message} } } — pushed whole from main.js.
+  let providersPayload = { claude: null, antigravity: null, providers: {} };
+  let selectedProvider = localStorage.getItem('selectedProvider') || 'claude';
+  let currentAccentHex = '#CC785C';
   let chart = null;
-  let nextAt = Date.now() + 5 * 60 * 1000;
-  let lastSeenUpdate = null;
   let detailsOpen = false;
 
   const BASE_WIDTH = 315;
   const BASE_HEIGHT = 370;
   const MAX_HEIGHT = 640;
+
+  // Same brand marks/colors as dynamic-island-native's Provider.swift, kept
+  // in sync by hand since this popup has no build step to share Swift code
+  // with. `hint` mirrors OTHER_PROVIDERS in main.js — used as a fallback
+  // when a provider is detected-but-not-signed-in, a state main.js has no
+  // driver to produce its own message for.
+  const PROVIDERS = [
+    { id: 'claude', name: 'Claude', color: '#CC785C', path: 'm4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z' },
+    { id: 'antigravity', name: 'Antigravity', color: '#4E8CFF', hint: 'Run `agy`, then sign in with Google.', path: 'M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81' },
+    { id: 'codex', name: 'Codex', color: '#3ECF8E', hint: 'Run `codex`, then `/status` for usage.', path: 'M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z' },
+    { id: 'cursor', name: 'Cursor', color: '#8B7CF6', hint: 'Run `cursor-agent`, then `/usage` for usage.', path: 'M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23' },
+  ];
 
   function color(pct) {
     if (pct == null) return 'var(--muted)';
@@ -409,10 +434,15 @@
     return 'var(--accent)';
   }
 
-  function colorHex(pct) {
+  // `goodColor` defaults to the selected provider's theme (right for stat
+  // numbers/chart, which are always showing that provider's own data), but
+  // callers rendering a specific *other* provider — like each switcher tab's
+  // own dot — need to pass that provider's own brand color instead, or every
+  // dot would converge on whichever tab is currently selected.
+  function colorHex(pct, goodColor) {
     if (pct >= 90) return '#c95c5c';
     if (pct >= 70) return '#d4a843';
-    return '#CC785C';
+    return goodColor || currentAccentHex;
   }
 
   function ago(ts) {
@@ -466,7 +496,9 @@
       .join('');
   }
 
-  function computeWidth(data) {
+  function computeWidth() {
+    if (selectedProvider !== 'claude') return BASE_WIDTH;
+    const data = providersPayload.claude;
     if (!data || (data.session == null && data.weekly == null)) return BASE_WIDTH;
     const digits = Math.max(
       String(data.session ?? 0).length,
@@ -523,7 +555,116 @@
     return parts.join('');
   }
 
-  function render(data) {
+  function render() {
+    if (selectedProvider !== 'claude') {
+      document.getElementById('main').innerHTML = renderOtherProviderContent(selectedProvider);
+      chart = null;
+      return;
+    }
+    renderClaude(providersPayload.claude);
+  }
+
+  function providerDotColor(id) {
+    const meta = PROVIDERS.find((p) => p.id === id);
+    if (id === 'claude') {
+      const d = providersPayload.claude;
+      if (!d || (d.session == null && d.weekly == null)) return '#555555';
+      return colorHex(Math.max(d.session ?? 0, d.weekly ?? 0), meta.color);
+    }
+    const status = providersPayload.providers?.[id];
+    if (id === 'antigravity' && status?.state === 'loggedIn') {
+      const g = providersPayload.antigravity || {};
+      const pct = g.fiveHourPct ?? g.weeklyPct;
+      return pct != null ? colorHex(pct, meta.color) : '#555555';
+    }
+    if (status?.state === 'error') return '#c95c5c';
+    return '#555555';
+  }
+
+  // Re-themes the whole popup (accent color used by stat numbers/chart/promo
+  // text, header title) to whichever provider is selected, and tells
+  // main.js so the tray badge picks up the same brand color — the tray
+  // otherwise has no way to know which provider the popup is showing.
+  function applyProviderTheme(id) {
+    const meta = PROVIDERS.find((p) => p.id === id) || PROVIDERS[0];
+    currentAccentHex = meta.color;
+    document.documentElement.style.setProperty('--accent', meta.color);
+    document.getElementById('appName').textContent = `${meta.name} Usage`;
+    window.claudeAPI.setSelectedProvider(id);
+  }
+
+  function renderSwitcher() {
+    applyProviderTheme(selectedProvider);
+    const el = document.getElementById('providerSwitcher');
+    // While a fetch is in flight, each tab's dot pulses in *that provider's
+    // own* brand color rather than the shared usage-tier color it shows at
+    // rest — so "which one is being pulled right now" reads per-tab instead
+    // of as a single app-wide spinner (which is what the old footer pulse was).
+    const refreshing = !!providersPayload.isRefreshing;
+    el.innerHTML = PROVIDERS.map((p) => `
+      <button class="provider-tab ${selectedProvider === p.id ? 'active' : ''}" data-id="${p.id}" title="${esc(p.name)}">
+        <svg class="provider-tab-icon" viewBox="0 0 24 24" fill="${p.color}"><path d="${p.path}"/></svg>
+        <span class="provider-tab-dot${refreshing ? ' pulsing' : ''}" style="background:${refreshing ? p.color : providerDotColor(p.id)}"></span>
+      </button>`).join('');
+    el.querySelectorAll('.provider-tab').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (selectedProvider === btn.dataset.id) return;
+        selectedProvider = btn.dataset.id;
+        localStorage.setItem('selectedProvider', selectedProvider);
+        detailsOpen = false;
+        renderSwitcher();
+        updateLastUpdatedLabel();
+        render();
+        applySize();
+      });
+    });
+  }
+
+  // Antigravity is the only other provider with a real driver yet — its
+  // signed-in state gets actual gauges, same shape as Claude's. Codex/Cursor
+  // (and Antigravity itself when not signed in) just get an install/sign-in
+  // hint, mirroring the native app's provider-picker wedges for those states.
+  function renderOtherProviderContent(id) {
+    const meta = PROVIDERS.find((p) => p.id === id);
+    const status = providersPayload.providers?.[id];
+    const state = status?.state || 'notInstalled';
+
+    if (id === 'antigravity' && state === 'loggedIn') {
+      const g = providersPayload.antigravity || {};
+      // `status.message` set alongside a still-`loggedIn` state means the
+      // latest fetch failed but we kept last-known-good numbers cached (see
+      // refreshOtherProviders() in main.js) — same stale-banner treatment
+      // Claude's own view uses for the same situation.
+      const staleBanner = status.message
+        ? `<div class="stale-banner">${esc(status.message)}</div>` : '';
+      return `${staleBanner}<div class="stats">${statHTML('5 Hour', g.fiveHourPct, g.fiveHourReset)}${statHTML('Weekly', g.weeklyPct, g.weeklyReset)}</div>`;
+    }
+
+    const title =
+      state === 'error' ? (status.message || `Couldn't read ${meta.name} usage.`) :
+      state === 'installed' ? `${meta.name} is installed, but not signed in yet.` :
+      `${meta.name} isn't installed.`;
+    const hint = (state === 'notInstalled' && status?.message) || meta.hint || '';
+
+    return `
+      <div class="error-wrap">
+        <div class="error-msg${state === 'error' ? ' is-error' : ''}">${esc(title)}</div>
+        ${hint ? `<div class="error-cmd">${esc(hint)}</div>` : ''}
+      </div>`;
+  }
+
+  function updateLastUpdatedLabel() {
+    const el = document.getElementById('lastUpdated');
+    if (selectedProvider === 'claude') {
+      el.textContent = 'updated ' + ago(providersPayload.claude?.lastUpdated);
+    } else if (selectedProvider === 'antigravity' && providersPayload.providers?.antigravity?.state === 'loggedIn') {
+      el.textContent = 'updated ' + ago(providersPayload.antigravity?.lastUpdated);
+    } else {
+      el.textContent = PROVIDERS.find((p) => p.id === selectedProvider)?.name || '';
+    }
+  }
+
+  function renderClaude(data) {
     const el = document.getElementById('main');
 
     if (!data || (data.session == null && data.weekly == null)) {
@@ -597,8 +738,8 @@
     if (toggleBtn) {
       toggleBtn.addEventListener('click', () => {
         detailsOpen = !detailsOpen;
-        render(data);
-        applySize(data);
+        renderClaude(data);
+        applySize();
       });
     }
   }
@@ -681,8 +822,8 @@
     }
   }
 
-  function applySize(data) {
-    const width = computeWidth(data);
+  function applySize() {
+    const width = computeWidth();
     // Measure actual rendered height (post-layout, so text wrapping etc. is
     // accounted for) rather than guessing it from a pixel formula.
     const shell = document.querySelector('.shell');
@@ -691,47 +832,37 @@
     window.claudeAPI.setWindowSize(width, height);
   }
 
-  function updateUI(data) {
-    currentData = data;
-    document.getElementById('lastUpdated').textContent = 'updated ' + ago(data?.lastUpdated);
-    render(data);
-    applySize(data);
-    if (data && (data.session != null || data.weekly != null)) {
-      history.push({ ...data, timestamp: Date.now() });
+  function updateUI(payload) {
+    providersPayload = payload || { claude: null, antigravity: null, providers: {} };
+    updateLastUpdatedLabel();
+    renderSwitcher();
+    render();
+    applySize();
+    const claudeData = providersPayload.claude;
+    if (claudeData && (claudeData.session != null || claudeData.weekly != null)) {
+      history.push({ ...claudeData, timestamp: Date.now() });
       if (history.length > 200) history.shift();
       try { localStorage.setItem('usageHistory', JSON.stringify(history)); } catch (e) {}
     }
   }
 
   setInterval(() => {
-    const rem = Math.max(0, Math.round((nextAt - Date.now()) / 1000));
-    const el = document.getElementById('countdown');
-    if (el) el.textContent = `${Math.floor(rem / 60)}:${String(rem % 60).padStart(2, '0')}`;
-    if (rem === 0) nextAt = Date.now() + 5 * 60 * 1000;
-    if (currentData) document.getElementById('lastUpdated').textContent = 'updated ' + ago(currentData.lastUpdated);
+    if (providersPayload.claude) updateLastUpdatedLabel();
   }, 1000);
 
   document.getElementById('refreshBtn').addEventListener('click', async () => {
     const btn = document.getElementById('refreshBtn');
     btn.classList.add('spinning');
-    const data = await window.claudeAPI.refresh();
+    const payload = await window.claudeAPI.refresh();
     btn.classList.remove('spinning');
-    nextAt = Date.now() + 5 * 60 * 1000;
-    lastSeenUpdate = data?.lastUpdated ?? null;
-    updateUI(data);
+    updateUI(payload);
   });
 
   document.getElementById('closeBtn').addEventListener('click', () => window.claudeAPI.closePopup());
 
-  window.claudeAPI.onUsageUpdate(data => {
-    updateUI(data);
-    if (data?.lastUpdated !== lastSeenUpdate) {
-      lastSeenUpdate = data?.lastUpdated ?? null;
-      nextAt = (data?.lastUpdated ?? Date.now()) + 5 * 60 * 1000;
-    }
-  });
+  window.claudeAPI.onUsageUpdate(payload => updateUI(payload));
 
-  window.claudeAPI.getUsage().then(data => updateUI(data));
+  window.claudeAPI.getUsage().then(payload => updateUI(payload));
 </script>
 </body>
 </html>

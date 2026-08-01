@@ -13,6 +13,7 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const { parseUsageOutput, parseStatsOutput, toCleanLines } = require("./usage-parser.js");
+const { ansiToLines, stripBoxChars } = require("./ansi-grid.js");
 
 const LOG_FILE = path.join(os.homedir(), "claude-tray-debug.log");
 function log(...args) {
@@ -40,6 +41,216 @@ let usageData = {
 };
 let pollInterval = null;
 let isPolling = false;
+// Whole-refresh-cycle flag (Claude + every other provider fetch together
+// each cycle) — broadcast to the popup so each provider tab's dot can pulse
+// while a fetch is in flight, distinct from that dot's resting usage/status color.
+let isRefreshing = false;
+
+// ─── Other providers (Antigravity, Codex, Cursor) ────────────────────────────
+// Only Antigravity (the `agy` CLI) has a real quota panel we know how to
+// drive and parse today — Codex/Cursor are detected (installed or not) but
+// otherwise just show a "run this to check" hint, same as the native app's
+// provider-picker wedges for those two.
+const OTHER_PROVIDERS = [
+  { id: "antigravity", binary: "agy", hint: "Run `agy`, then sign in with Google." },
+  { id: "codex", binary: "codex", hint: "Run `codex`, then `/status` for usage." },
+  { id: "cursor", binary: "cursor-agent", hint: "Run `cursor-agent`, then `/usage` for usage." },
+];
+
+// providerStatus[id] = { state: 'notInstalled' | 'installed' | 'loggedIn' | 'error', message }
+let providerStatus = {};
+let antigravityData = { fiveHourPct: null, weeklyPct: null, fiveHourReset: null, weeklyReset: null, error: null, lastUpdated: null };
+
+function whichBinary(bin) {
+  return new Promise((resolve) => {
+    const isWin = process.platform === "win32";
+    exec(isWin ? `where ${bin}` : `which ${bin}`, (err, stdout) => {
+      resolve(!err && !!(stdout || "").trim());
+    });
+  });
+}
+
+// Detection only proves the binary exists — it says nothing about whether
+// the user is actually signed in, so `installed` (not `loggedIn`) is the
+// most any of these can claim without actually driving the CLI.
+async function detectOtherProviders() {
+  const result = {};
+  for (const p of OTHER_PROVIDERS) {
+    const installed = await whichBinary(p.binary);
+    result[p.id] = { state: installed ? "installed" : "notInstalled", message: installed ? null : p.hint };
+  }
+  return result;
+}
+
+function findAgyPath() {
+  return [
+    "/opt/homebrew/bin/agy",
+    "/usr/local/bin/agy",
+    "/usr/bin/agy",
+    path.join(os.homedir(), ".local/bin/agy"),
+  ];
+}
+
+// The quota panel's bar/percentage is how much is *remaining*, not used —
+// e.g. "98.68%" full means almost nothing has been used. Every other
+// provider's pct in this app means percent USED, so this inverts it.
+function usedPctFromRemaining(remainingStr) {
+  const remaining = parseFloat(remainingStr);
+  if (Number.isNaN(remaining)) return null;
+  return Math.round(100 - remaining);
+}
+
+// agy's own duration text is always "<N>h <M>m" (e.g. "157h 4m") — never
+// days, and never correctly pluralized. Re-express in days/hours (falling
+// back to minutes for anything under an hour), singular/plural picked per unit.
+function formatAgyDuration(str) {
+  const hMatch = str.match(/(\d+)\s*h/);
+  const mMatch = str.match(/(\d+)\s*m/);
+  const totalMinutes = (hMatch ? parseInt(hMatch[1], 10) : 0) * 60 + (mMatch ? parseInt(mMatch[1], 10) : 0);
+  if (totalMinutes <= 0) return str;
+
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  const unit = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+  const parts = [];
+  if (days > 0) parts.push(unit(days, "day"));
+  if (hours > 0) parts.push(unit(hours, "hour"));
+  if (days === 0 && hours === 0 && minutes > 0) parts.push(unit(minutes, "minute"));
+  return parts.join(" ") || str;
+}
+
+function parseAgyOutput(raw) {
+  const lines = ansiToLines(raw)
+    .map((l) => stripBoxChars(l).trim())
+    .filter(Boolean);
+  const text = lines.join("\n");
+
+  const geminiSectionMatch = text.match(/GEMINI MODELS([\s\S]*?)(?:CLAUDE AND GPT MODELS|$)/);
+  if (!geminiSectionMatch) {
+    // "not signed in" also flashes during the normal startup handshake
+    // (banner shows it, then silently signs in from a cached token), so
+    // only trust it once we know the quota panel never showed up at all —
+    // if an account email did show, sign-in actually succeeded and the
+    // panel parse itself just failed.
+    const sawAccount = /[\w.+-]+@[\w-]+\.[\w.-]+/.test(text);
+    if (!sawAccount && /currently not signed in/.test(raw)) {
+      return { signedIn: false, weeklyPct: null, fiveHourPct: null, error: null };
+    }
+    return { signedIn: true, weeklyPct: null, fiveHourPct: null, error: "Could not find quota panel." };
+  }
+  const section = geminiSectionMatch[1];
+
+  // "100% remaining · Refreshes in 157h 4m" — the "Refreshes in …" clause is
+  // only present once some quota has actually been consumed; a completely
+  // untouched limit just reads "Quota available" with nothing to count down.
+  const weeklyMatch = section.match(/Weekly Limit[\s\S]*?([\d.]+)%\s*\n\s*(?:([\d.]+)% remaining(?:\s*·\s*Refreshes in ([^\n]+))?|Quota available)/);
+  const fiveHourMatch = section.match(/Five Hour Limit[\s\S]*?([\d.]+)%\s*\n\s*(?:([\d.]+)% remaining(?:\s*·\s*Refreshes in ([^\n]+))?|Quota available)/);
+
+  const weeklyPct = weeklyMatch ? usedPctFromRemaining(weeklyMatch[2] ?? weeklyMatch[1]) : null;
+  const fiveHourPct = fiveHourMatch ? usedPctFromRemaining(fiveHourMatch[2] ?? fiveHourMatch[1]) : null;
+  const weeklyReset = weeklyMatch?.[3] ? `Refreshes in ${formatAgyDuration(weeklyMatch[3].trim())}` : null;
+  const fiveHourReset = fiveHourMatch?.[3] ? `Refreshes in ${formatAgyDuration(fiveHourMatch[3].trim())}` : null;
+
+  return {
+    signedIn: true,
+    weeklyPct,
+    fiveHourPct,
+    weeklyReset,
+    fiveHourReset,
+    error: weeklyPct == null && fiveHourPct == null ? "Could not parse quota." : null,
+  };
+}
+
+function runAgyCommand(agyPath, augmentedEnv) {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve({ error: "Timed out." }), 60000);
+    const ptyWrapper = app.isPackaged
+      ? path.join(process.resourcesPath, "agy-pty-wrapper.py")
+      : path.join(__dirname, "agy-pty-wrapper.py");
+    const child = spawn("python3", [ptyWrapper, agyPath], {
+      env: { ...augmentedEnv, TERM: "dumb", FORCE_COLOR: "0" },
+    });
+    const doneTimeout = setTimeout(() => child.kill(), 58000);
+    let accumulated = "";
+    child.stdout.on("data", (d) => (accumulated += d.toString()));
+    child.on("close", () => {
+      clearTimeout(timeout);
+      clearTimeout(doneTimeout);
+      resolve(parseAgyOutput(accumulated));
+    });
+    child.on("error", (e) => {
+      clearTimeout(timeout);
+      resolve({ error: `Process error: ${e.message}` });
+    });
+  });
+}
+
+async function fetchAntigravityUsage() {
+  const extraPaths = ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), ".local/bin")];
+  const augmentedEnv = { ...process.env, PATH: `${extraPaths.join(":")}:${process.env.PATH || ""}` };
+  const agyPath = await new Promise((resolve) => {
+    exec("which agy", { env: augmentedEnv }, (err, stdout) => {
+      const fromWhich = (stdout || "").trim().split("\n")[0];
+      resolve(
+        fromWhich ||
+          findAgyPath().find((p) => {
+            try { fs.accessSync(p); return true; } catch { return false; }
+          }) ||
+          "agy"
+      );
+    });
+  });
+  return runAgyCommand(agyPath, augmentedEnv);
+}
+
+// Runs after Claude's own fetch, mirroring UsageService.refresh() in the
+// native app: detection first (cheap, just `which`), then only actually
+// drive Antigravity's PTY if detection found it installed — Codex/Cursor
+// have no driver yet, so detection alone is all their status will ever show.
+//
+// `isAgyPolling` mirrors Claude's own `isPolling` guard — a manual refresh
+// click landing while the 5-minute auto-poll (or another manual click) is
+// already mid-flight would otherwise spawn a second concurrent `agy`
+// process contending over the same CLI session/auth state, which was a
+// contributor to the intermittent "Could not find quota panel" failures.
+let isAgyPolling = false;
+async function refreshOtherProviders() {
+  if (isAgyPolling) return;
+  isAgyPolling = true;
+  try {
+    const detected = await detectOtherProviders();
+    if (detected.antigravity?.state === "installed") {
+      const result = await fetchAntigravityUsage();
+      if (result.error) {
+        // Same rule applyUsageData() uses for Claude: a transient failure
+        // (agy hiccuped, the PTY drive timed out) shouldn't blank the tab back
+        // to an error screen if we already have real cached percentages —
+        // keep showing them, with the error surfaced alongside as a hint.
+        const hasCachedData = antigravityData.fiveHourPct != null || antigravityData.weeklyPct != null;
+        detected.antigravity = hasCachedData
+          ? { state: "loggedIn", message: result.error }
+          : { state: "error", message: result.error };
+      } else if (result.signedIn === false) {
+        detected.antigravity = { state: "installed", message: null };
+      } else {
+        antigravityData = {
+          fiveHourPct: result.fiveHourPct,
+          weeklyPct: result.weeklyPct,
+          fiveHourReset: result.fiveHourReset,
+          weeklyReset: result.weeklyReset,
+          error: null,
+          lastUpdated: Date.now(),
+        };
+        detected.antigravity = { state: "loggedIn", message: null };
+      }
+    }
+    providerStatus = detected;
+  } finally {
+    isAgyPolling = false;
+  }
+}
 
 // Checked before spawning `claude` at all — a DNS lookup is faster than
 // waiting out a doomed PTY call, and (unlike parsing claude's own error
@@ -357,9 +568,19 @@ async function fetchUsageAndStats() {
 
 // ─── Tray icon ───────────────────────────────────────────────────────────────
 
-// Generate the orange Claude-style icon with the session % drawn on it.
-// Uses the popup window's renderer canvas (no extra deps needed).
-async function generateTrayIcon(pct) {
+// Same brand colors as popup.html's PROVIDERS table and dynamic-island-native's
+// Provider.swift — kept in sync by hand since none of these share a build step.
+const PROVIDER_COLORS = { claude: "#CC785C", antigravity: "#4E8CFF", codex: "#3ECF8E", cursor: "#8B7CF6" };
+const PROVIDER_LETTERS = { claude: "C", antigravity: "A", codex: "X", cursor: "U" };
+// Which provider's data the tray badge reflects — driven by the popup's own
+// switcher via the `set-selected-provider` IPC call, since main.js has no
+// other way to know which tab the renderer is currently showing.
+let selectedProviderId = "claude";
+
+// Generate the tray-badge icon (provider brand color background, % or a
+// fallback letter drawn on top). Uses the popup window's renderer canvas (no
+// extra deps needed).
+async function generateTrayIcon(pct, color, fallbackLabel) {
   if (
     !popupWindow ||
     popupWindow.isDestroyed() ||
@@ -390,14 +611,15 @@ async function generateTrayIcon(pct) {
     // Draw at 2× target for crisp rendering, then resize down.
     const sz = targetSize * 2;
 
-    const label = JSON.stringify(pct != null ? String(pct) + "%" : "?");
+    const label = JSON.stringify(pct != null ? String(pct) + "%" : (fallbackLabel || "?"));
+    const fillColor = JSON.stringify(color || PROVIDER_COLORS.claude);
     const dataURL = await popupWindow.webContents.executeJavaScript(`
       (() => {
         const c = document.createElement('canvas');
         const sz = ${sz};
         c.width = c.height = sz;
         const ctx = c.getContext('2d');
-        // Orange rounded-rect background (Claude brand color)
+        // Rounded-rect background in the active provider's brand color
         const r = Math.round(sz * 11 / 56);
         ctx.beginPath();
         ctx.moveTo(r, 0); ctx.lineTo(sz-r, 0);
@@ -405,7 +627,7 @@ async function generateTrayIcon(pct) {
         ctx.arcTo(sz, sz, sz-r, sz, r); ctx.lineTo(r, sz);
         ctx.arcTo(0, sz, 0, sz-r, r); ctx.lineTo(0, r);
         ctx.arcTo(0, 0, r, 0, r); ctx.closePath();
-        ctx.fillStyle = '#CC785C';
+        ctx.fillStyle = ${fillColor};
         ctx.fill();
         // White session % number
         const text = ${label};
@@ -430,41 +652,76 @@ async function generateTrayIcon(pct) {
 async function updateTrayTitle() {
   if (!tray) return;
 
-  const { session, weekly, error } = usageData;
-  const sPct = session != null ? session : null;
-  const wPct = weekly != null ? weekly : null;
+  const color = PROVIDER_COLORS[selectedProviderId] || PROVIDER_COLORS.claude;
+  const letter = PROVIDER_LETTERS[selectedProviderId] || "C";
 
-  // No usable data at all (nothing ever fetched successfully, or auth is
-  // broken) — show the hard error state.
-  if (error && sPct == null && wPct == null) {
-    tray.setImage(nativeImage.createEmpty());
-    tray.setTitle("C !");
-    tray.setToolTip("Claude Tray: " + error);
+  if (selectedProviderId === "claude") {
+    const { session, weekly, error } = usageData;
+    const sPct = session != null ? session : null;
+    const wPct = weekly != null ? weekly : null;
+
+    // No usable data at all (nothing ever fetched successfully, or auth is
+    // broken) — show the hard error state.
+    if (error && sPct == null && wPct == null) {
+      tray.setImage(nativeImage.createEmpty());
+      tray.setTitle(`${letter} !`);
+      tray.setToolTip("Claude Tray: " + error);
+      return;
+    }
+
+    if (sPct == null && wPct == null) {
+      tray.setImage(nativeImage.createEmpty());
+      tray.setTitle(`${letter} ...`);
+      tray.setToolTip("Claude Tray: fetching usage...");
+      return;
+    }
+
+    // Stale-but-valid: keep showing the last known percentages, just note in
+    // the tooltip that the latest refresh failed instead of hiding the icon.
+    tray.setToolTip(
+      error
+        ? `Claude Usage — Session: ${sPct ?? "?"}%  Weekly: ${wPct ?? "?"}% (${error})`
+        : `Claude Usage — Session: ${sPct ?? "?"}%  Weekly: ${wPct ?? "?"}%`
+    );
+
+    const icon = await generateTrayIcon(sPct, color, letter);
+    if (icon) {
+      tray.setImage(icon);
+      tray.setTitle("");
+    } else {
+      tray.setImage(nativeImage.createEmpty());
+      tray.setTitle(`${sPct ?? "?"}s  ${wPct ?? "?"}w`);
+    }
     return;
   }
 
-  if (sPct == null && wPct == null) {
-    tray.setImage(nativeImage.createEmpty());
-    tray.setTitle("C ...");
-    tray.setToolTip("Claude Tray: fetching usage...");
+  if (selectedProviderId === "antigravity" && providerStatus.antigravity?.state === "loggedIn") {
+    const { fiveHourPct, weeklyPct } = antigravityData;
+    const pct = fiveHourPct ?? weeklyPct;
+    tray.setToolTip(`Antigravity Usage — 5hr: ${fiveHourPct ?? "?"}%  Weekly: ${weeklyPct ?? "?"}%`);
+    const icon = await generateTrayIcon(pct, color, letter);
+    if (icon) {
+      tray.setImage(icon);
+      tray.setTitle("");
+    } else {
+      tray.setImage(nativeImage.createEmpty());
+      tray.setTitle(`${letter} ${pct ?? "?"}%`);
+    }
     return;
   }
 
-  // Stale-but-valid: keep showing the last known percentages, just note in
-  // the tooltip that the latest refresh failed instead of hiding the icon.
-  tray.setToolTip(
-    error
-      ? `Claude Usage — Session: ${sPct ?? "?"}%  Weekly: ${wPct ?? "?"}% (${error})`
-      : `Claude Usage — Session: ${sPct ?? "?"}%  Weekly: ${wPct ?? "?"}%`
-  );
-
-  const icon = await generateTrayIcon(sPct);
+  // Antigravity-not-signed-in, Codex, Cursor — no real quota to show yet, just
+  // a brand-colored letter badge so the tray still reflects which provider's
+  // tab is open in the popup.
+  const status = providerStatus[selectedProviderId];
+  tray.setToolTip(status?.message ? `${letter}: ${status.message}` : "Claude Tray");
+  const icon = await generateTrayIcon(null, color, letter);
   if (icon) {
     tray.setImage(icon);
     tray.setTitle("");
   } else {
     tray.setImage(nativeImage.createEmpty());
-    tray.setTitle(`${sPct ?? "?"}s  ${wPct ?? "?"}w`);
+    tray.setTitle(`${letter} ...`);
   }
 }
 
@@ -472,12 +729,17 @@ async function updateTrayTitle() {
 // (only meaningful while visible; it also pulls on show) and the setup
 // wizard's "Checking Claude Code" step, which needs to react live since it
 // can be open before the very first fetch resolves.
+function combinedUsagePayload() {
+  return { claude: usageData, antigravity: antigravityData, providers: providerStatus, isRefreshing };
+}
+
 function broadcastUsageUpdate() {
+  const payload = combinedUsagePayload();
   if (popupWindow && !popupWindow.isDestroyed()) {
-    popupWindow.webContents.send("usage-update", usageData);
+    popupWindow.webContents.send("usage-update", payload);
   }
   if (wizardWindow && !wizardWindow.isDestroyed()) {
-    wizardWindow.webContents.send("usage-update", usageData);
+    wizardWindow.webContents.send("usage-update", payload);
   }
 }
 
@@ -563,7 +825,7 @@ function togglePopup() {
   popupWindow.setPosition(x, y);
   popupWindow.show();
   popupWindow.focus();
-  popupWindow.webContents.send("usage-update", usageData);
+  popupWindow.webContents.send("usage-update", combinedUsagePayload());
 }
 
 // ─── Setup wizard ────────────────────────────────────────────────────────────
@@ -624,7 +886,13 @@ function createWizardWindow() {
 
 // ─── IPC handlers ────────────────────────────────────────────────────────────
 
-ipcMain.handle("get-usage", () => usageData);
+ipcMain.handle("get-usage", () => combinedUsagePayload());
+
+ipcMain.handle("set-selected-provider", async (_, id) => {
+  if (!PROVIDER_COLORS[id]) return;
+  selectedProviderId = id;
+  await updateTrayTitle();
+});
 
 ipcMain.handle("set-window-size", (_, width, height) => {
   if (!popupWindow || popupWindow.isDestroyed()) return;
@@ -688,10 +956,14 @@ function applyUsageData(data) {
 }
 
 ipcMain.handle("refresh", async () => {
-  applyUsageData(await fetchUsageAndStats());
+  isRefreshing = true;
+  broadcastUsageUpdate();
+  const [claudeResult] = await Promise.all([fetchUsageAndStats(), refreshOtherProviders()]);
+  applyUsageData(claudeResult);
+  isRefreshing = false;
   await updateTrayTitle();
   broadcastUsageUpdate();
-  return usageData;
+  return combinedUsagePayload();
 });
 
 ipcMain.handle("close-popup", () => {
@@ -710,6 +982,9 @@ ipcMain.handle("wizard-finish", () => {
 });
 
 // ─── App lifecycle ───────────────────────────────────────────────────────────
+
+process.on("uncaughtException", (err) => log("UNCAUGHT:", err.stack || String(err)));
+process.on("unhandledRejection", (err) => log("UNHANDLED REJECTION:", (err && err.stack) || String(err)));
 
 app.whenReady().then(async () => {
   app.dock?.hide(); // Hide from macOS dock
@@ -738,14 +1013,33 @@ app.whenReady().then(async () => {
     popupWindow.webContents.once("did-finish-load", resolve);
   });
 
+  // The real menu-bar icon only appears in a signed, packaged build (see
+  // README) — `npm start` runs the raw dev Electron binary, which macOS
+  // silently refuses a status-bar slot for. This lets popup/renderer work
+  // still iterate at `npm start` speed without needing a full rebuild just
+  // to click a tray icon that won't be there.
+  if (process.env.DEBUG_SHOW_POPUP) {
+    popupWindow.setPosition(40, 40);
+    popupWindow.show();
+    popupWindow.focus();
+  }
+
   // Initial fetch
-  applyUsageData(await fetchUsageAndStats());
+  isRefreshing = true;
+  broadcastUsageUpdate();
+  const [initialClaude] = await Promise.all([fetchUsageAndStats(), refreshOtherProviders()]);
+  applyUsageData(initialClaude);
+  isRefreshing = false;
   await updateTrayTitle();
   broadcastUsageUpdate(); // wizard's "Checking Claude Code" step may already be open
 
   // Poll every 5 minutes
   pollInterval = setInterval(async () => {
-    applyUsageData(await fetchUsageAndStats());
+    isRefreshing = true;
+    broadcastUsageUpdate();
+    const [claudeResult] = await Promise.all([fetchUsageAndStats(), refreshOtherProviders()]);
+    applyUsageData(claudeResult);
+    isRefreshing = false;
     await updateTrayTitle();
     broadcastUsageUpdate();
   }, 5 * 60 * 1000);

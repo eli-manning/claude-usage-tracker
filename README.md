@@ -1,6 +1,6 @@
 # Claude Usage Tracker
 
-Two tools for monitoring your Claude usage limits.
+Three tools for monitoring your Claude usage limits.
 
 ---
 
@@ -24,11 +24,20 @@ Requires [Claude Code](https://docs.anthropic.ai/claude-code) installed and auth
 - Click-to-open popup with session + weekly gauges, reset times, and a history chart
 - Icon color shifts orange → yellow → red at 70% and 90%
 - Auto-refreshes every 5 minutes by running `claude /usage` in the background
-- Manual refresh button and countdown timer in the popup
+- Manual refresh button in the popup
+- Switch between providers (Claude, Antigravity, Codex, Cursor) right from the popup
 
 **Privacy:** Everything runs locally. The app calls `claude /usage` on your machine — no API calls, no secrets, no network traffic beyond what Claude Code itself does. Usage percentages are stored in `localStorage` for the history chart only. Nothing leaves your machine.
 
 → [Full install instructions and troubleshooting](os-menu/README.md)
+
+---
+
+## Dynamic Island — `dynamic-island-native/`
+
+A native macOS Swift Package: a floating panel that hangs just under your Mac's menu bar, always visible — no click-to-open step. Rest state is a small pill with a live session/weekly readout; click it and it morphs into a radial ring of provider wedges (Claude, Antigravity, Codex, Cursor), with Claude and Antigravity's own model/quota stats wired up so far.
+
+Run from source with `swift build && swift run` — no packaged download yet.
 
 ---
 
@@ -48,10 +57,11 @@ A Chrome extension for **Claude.ai** (the web app). Shows session and weekly usa
 
 ## Requirements
 
-**Tray app:**
+**Tray app & Dynamic Island:**
 - [Claude Code](https://docs.anthropic.ai/claude-code) installed and authenticated: `npm i -g @anthropic-ai/claude-code`
 - Node.js v18+
-- Python 3 (macOS only)
+- Python 3
+- Dynamic Island is macOS-only (it hangs under the menu bar, which is a Mac-specific concept)
 
 **Chrome extension:**
 - Google Chrome or any Chromium-based browser

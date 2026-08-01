@@ -347,8 +347,8 @@
     const card = document.getElementById('statusCard');
     card.innerHTML = `<div class="status-line"><span class="spinner"></span>Checking…</div>`;
     const data = await window.wizardAPI.refresh();
-    latestData = data;
-    renderStatus(data);
+    latestData = data.claude;
+    renderStatus(data.claude);
   }
 
   async function finish() {
@@ -376,8 +376,8 @@
   // entirely). pollStatus() below is a second, independent safety net in
   // case some other timing gap causes a broadcast to go missing.
   window.wizardAPI.onUsageUpdate((data) => {
-    latestData = data;
-    if (step === 1) renderStatus(data);
+    latestData = data.claude;
+    if (step === 1) renderStatus(data.claude);
   });
 
   let statusPollTimer = null;
@@ -386,8 +386,8 @@
     statusPollTimer = setInterval(async () => {
       if (step !== 1) return;
       const data = await window.wizardAPI.getUsage();
-      latestData = data;
-      renderStatus(data);
+      latestData = data.claude;
+      renderStatus(data.claude);
     }, 1500);
   }
 
