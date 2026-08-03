@@ -404,8 +404,9 @@
   let history = JSON.parse(localStorage.getItem('usageHistory') || '[]');
   let chartMode = 'weekly';
   // { claude: <ClaudeUsage>, antigravity: <{fiveHourPct, weeklyPct, error, lastUpdated}>,
+  //   codex: <{plan, limits, error, lastUpdated}>, cursor: <{plan, reset, rows, error, lastUpdated}>,
   //   providers: { antigravity|codex|cursor: {state, message} } } — pushed whole from main.js.
-  let providersPayload = { claude: null, antigravity: null, providers: {} };
+  let providersPayload = { claude: null, antigravity: null, codex: null, cursor: null, providers: {} };
   let selectedProvider = localStorage.getItem('selectedProvider') || 'claude';
   let currentAccentHex = '#CC785C';
   let chart = null;
@@ -443,6 +444,25 @@
     if (pct >= 90) return '#c95c5c';
     if (pct >= 70) return '#d4a843';
     return goodColor || currentAccentHex;
+  }
+
+  // Mirrors codexPrimaryPct/cursorPrimaryPct in main.js — duplicated rather
+  // than shared since the renderer and main process don't share modules
+  // here, same as PROVIDER_COLORS/PROVIDER_LETTERS being kept in sync by
+  // hand across the two files already.
+  function codexPrimaryPct(data) {
+    const limits = data.limits;
+    if (!limits || !limits.length) return null;
+    const named = (needle) => limits.find((l) => l.name.toLowerCase().includes(needle));
+    const pick = named('5h') || named('weekly') || limits[0];
+    return pick ? pick.pctUsed : null;
+  }
+
+  function cursorPrimaryPct(data) {
+    const rows = data.rows;
+    if (!rows || !rows.length) return null;
+    const pick = rows.find((r) => r.name.toLowerCase() === 'included') || rows[0];
+    return pick ? pick.pctUsed : null;
   }
 
   function ago(ts) {
@@ -577,6 +597,14 @@
       const pct = g.fiveHourPct ?? g.weeklyPct;
       return pct != null ? colorHex(pct, meta.color) : '#555555';
     }
+    if (id === 'codex' && status?.state === 'loggedIn') {
+      const pct = codexPrimaryPct(providersPayload.codex || {});
+      return pct != null ? colorHex(pct, meta.color) : '#555555';
+    }
+    if (id === 'cursor' && status?.state === 'loggedIn') {
+      const pct = cursorPrimaryPct(providersPayload.cursor || {});
+      return pct != null ? colorHex(pct, meta.color) : '#555555';
+    }
     if (status?.state === 'error') return '#c95c5c';
     return '#555555';
   }
@@ -627,7 +655,12 @@
   function renderOtherProviderContent(id) {
     const meta = PROVIDERS.find((p) => p.id === id);
     const status = providersPayload.providers?.[id];
-    const state = status?.state || 'notInstalled';
+    // `status` is simply undefined until the very first refreshOtherProviders()
+    // completes — 'checking' is what lets that boot window read as "haven't
+    // looked yet" instead of flashing "not installed" for a provider that's
+    // actually installed and signed in, just not checked yet (mirrors
+    // ProviderState.checking in the native app).
+    const state = status ? status.state : 'checking';
 
     if (id === 'antigravity' && state === 'loggedIn') {
       const g = providersPayload.antigravity || {};
@@ -638,6 +671,35 @@
       const staleBanner = status.message
         ? `<div class="stale-banner">${esc(status.message)}</div>` : '';
       return `${staleBanner}<div class="stats">${statHTML('5 Hour', g.fiveHourPct, g.fiveHourReset)}${statHTML('Weekly', g.weeklyPct, g.weeklyReset)}</div>`;
+    }
+
+    if (id === 'codex' && state === 'loggedIn') {
+      const c = providersPayload.codex || {};
+      const staleBanner = status.message
+        ? `<div class="stale-banner">${esc(status.message)}</div>` : '';
+      const stats = (c.limits || [])
+        .map((l) => statHTML(l.name.replace(/ limit$/i, ''), l.pctUsed, l.reset ? `Resets ${l.reset}` : null))
+        .join('');
+      return `${staleBanner}<div class="stats">${stats}</div>`;
+    }
+
+    if (id === 'cursor' && state === 'loggedIn') {
+      const c = providersPayload.cursor || {};
+      const staleBanner = status.message
+        ? `<div class="stale-banner">${esc(status.message)}</div>` : '';
+      // Every row shares the one reset date the panel prints once in its
+      // header, unlike Codex where each limit has its own.
+      const stats = (c.rows || [])
+        .map((r) => statHTML(r.name, r.pctUsed, c.reset ? `Resets ${c.reset}` : null))
+        .join('');
+      return `${staleBanner}<div class="stats">${stats}</div>`;
+    }
+
+    if (state === 'checking') {
+      return `
+        <div class="error-wrap">
+          <div class="error-msg">Checking ${esc(meta.name)}…</div>
+        </div>`;
     }
 
     const title =
@@ -659,6 +721,10 @@
       el.textContent = 'updated ' + ago(providersPayload.claude?.lastUpdated);
     } else if (selectedProvider === 'antigravity' && providersPayload.providers?.antigravity?.state === 'loggedIn') {
       el.textContent = 'updated ' + ago(providersPayload.antigravity?.lastUpdated);
+    } else if (selectedProvider === 'codex' && providersPayload.providers?.codex?.state === 'loggedIn') {
+      el.textContent = 'updated ' + ago(providersPayload.codex?.lastUpdated);
+    } else if (selectedProvider === 'cursor' && providersPayload.providers?.cursor?.state === 'loggedIn') {
+      el.textContent = 'updated ' + ago(providersPayload.cursor?.lastUpdated);
     } else {
       el.textContent = PROVIDERS.find((p) => p.id === selectedProvider)?.name || '';
     }
@@ -833,7 +899,7 @@
   }
 
   function updateUI(payload) {
-    providersPayload = payload || { claude: null, antigravity: null, providers: {} };
+    providersPayload = payload || { claude: null, antigravity: null, codex: null, cursor: null, providers: {} };
     updateLastUpdatedLabel();
     renderSwitcher();
     render();
