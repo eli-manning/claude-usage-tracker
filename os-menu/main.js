@@ -47,10 +47,9 @@ let isPolling = false;
 let isRefreshing = false;
 
 // ─── Other providers (Antigravity, Codex, Cursor) ────────────────────────────
-// Only Antigravity (the `agy` CLI) has a real quota panel we know how to
-// drive and parse today — Codex/Cursor are detected (installed or not) but
-// otherwise just show a "run this to check" hint, same as the native app's
-// provider-picker wedges for those two.
+// All three now have a real quota panel this app knows how to drive and
+// parse (see fetchAntigravityUsage/fetchCodexUsage/fetchCursorUsage below),
+// matching dynamic-island-native's native support for the same three.
 const OTHER_PROVIDERS = [
   { id: "antigravity", binary: "agy", hint: "Run `agy`, then sign in with Google." },
   { id: "codex", binary: "codex", hint: "Run `codex`, then `/status` for usage." },
@@ -58,13 +57,35 @@ const OTHER_PROVIDERS = [
 ];
 
 // providerStatus[id] = { state: 'notInstalled' | 'installed' | 'loggedIn' | 'error', message }
+// Deliberately starts empty (not pre-filled with 'notInstalled' for every
+// id) — `providerStatus[id]` being simply undefined before the first
+// refreshOtherProviders() completes is what lets the renderer tell "haven't
+// checked yet" apart from "checked, and it's not installed" (see
+// renderOtherProviderContent's `state` fallback in popup.html).
 let providerStatus = {};
 let antigravityData = { fiveHourPct: null, weeklyPct: null, fiveHourReset: null, weeklyReset: null, error: null, lastUpdated: null };
+// Codex's/Cursor's own variable-length rows (see their fetch/parse
+// functions below) rather than fixed fields, same reasoning as
+// dynamic-island-native's CodexUsage/CursorUsage — which limits/categories
+// exist depends on the account's plan.
+let codexData = { plan: null, limits: null, error: null, lastUpdated: null };
+let cursorData = { plan: null, reset: null, rows: null, error: null, lastUpdated: null };
+
+// A packaged Electron app's process env is whatever launched it (Finder/
+// LaunchServices' bare-bones PATH), not a login shell — `~/.local/bin`
+// (where cursor-agent/agent live) only ever gets added by a shell rc file
+// for *interactive* shells, so it never makes it in here. Every `which`
+// check needs this same augmentation or a CLI installed exactly like the
+// installer's own docs say to will still read as "not installed".
+function pathAugmentedEnv() {
+  const extraPaths = ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), ".local/bin")];
+  return { ...process.env, PATH: `${extraPaths.join(":")}:${process.env.PATH || ""}` };
+}
 
 function whichBinary(bin) {
   return new Promise((resolve) => {
     const isWin = process.platform === "win32";
-    exec(isWin ? `where ${bin}` : `which ${bin}`, (err, stdout) => {
+    exec(isWin ? `where ${bin}` : `which ${bin}`, { env: pathAugmentedEnv() }, (err, stdout) => {
       resolve(!err && !!(stdout || "").trim());
     });
   });
@@ -188,8 +209,7 @@ function runAgyCommand(agyPath, augmentedEnv) {
 }
 
 async function fetchAntigravityUsage() {
-  const extraPaths = ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), ".local/bin")];
-  const augmentedEnv = { ...process.env, PATH: `${extraPaths.join(":")}:${process.env.PATH || ""}` };
+  const augmentedEnv = pathAugmentedEnv();
   const agyPath = await new Promise((resolve) => {
     exec("which agy", { env: augmentedEnv }, (err, stdout) => {
       const fromWhich = (stdout || "").trim().split("\n")[0];
@@ -205,50 +225,277 @@ async function fetchAntigravityUsage() {
   return runAgyCommand(agyPath, augmentedEnv);
 }
 
+function findCodexPath() {
+  return [
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
+    "/usr/bin/codex",
+    path.join(os.homedir(), ".local/bin/codex"),
+  ];
+}
+
+// "Monthly limit:        [] 99% left (resets 20:27 on 30 Aug)" — Free plans
+// show only a monthly limit; paid plans may add a rolling 5-hour and/or
+// weekly one, so this scans every "<label>: [...] NN% left" row rather than
+// assuming a fixed set. Mirrors fetch-codex-usage.js in dynamic-island-native.
+const CODEX_LIMIT_RE = /^(.+?limit):\s*\[.*?\]\s*(\d+)%\s*left(?:\s*\(resets\s+([^)]+)\))?$/i;
+const CODEX_ACCOUNT_RE = /^Account:\s*(\S+)\s*\(([^)]+)\)/;
+
+function parseCodexOutput(raw) {
+  const lines = ansiToLines(raw).map((l) => stripBoxChars(l).trim()).filter(Boolean);
+  const account = lines.map((l) => l.match(CODEX_ACCOUNT_RE)).find(Boolean);
+  if (!account) {
+    // A logged-out `codex` blocks on its own sign-in flow (ChatGPT OAuth or
+    // an API key prompt) instead of ever reaching /status, so this can't be
+    // driven interactively — same situation as a logged-out `agy`.
+    if (/sign in|log ?in/i.test(raw)) {
+      return { signedIn: false, plan: null, limits: [], error: null };
+    }
+    return { signedIn: true, plan: null, limits: [], error: "Could not find status panel." };
+  }
+  const limits = [];
+  for (const line of lines) {
+    const m = line.match(CODEX_LIMIT_RE);
+    if (m) limits.push({ name: m[1].trim(), pctUsed: 100 - parseInt(m[2], 10), reset: m[3] ? m[3].trim() : null });
+  }
+  return {
+    signedIn: true,
+    plan: account[2].trim(),
+    limits,
+    error: limits.length === 0 ? "Could not parse quota." : null,
+  };
+}
+
+function runCodexCommand(codexPath, augmentedEnv) {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve({ error: "Timed out." }), 30000);
+    const ptyWrapper = app.isPackaged
+      ? path.join(process.resourcesPath, "codex-pty-wrapper.py")
+      : path.join(__dirname, "codex-pty-wrapper.py");
+    const child = spawn("python3", [ptyWrapper, codexPath], {
+      env: { ...augmentedEnv, TERM: "dumb", FORCE_COLOR: "0" },
+    });
+    const doneTimeout = setTimeout(() => child.kill(), 28000);
+    let accumulated = "";
+    child.stdout.on("data", (d) => (accumulated += d.toString()));
+    child.on("close", () => {
+      clearTimeout(timeout);
+      clearTimeout(doneTimeout);
+      resolve(parseCodexOutput(accumulated));
+    });
+    child.on("error", (e) => {
+      clearTimeout(timeout);
+      resolve({ error: `Process error: ${e.message}` });
+    });
+  });
+}
+
+async function fetchCodexUsage() {
+  const augmentedEnv = pathAugmentedEnv();
+  const codexPath = await new Promise((resolve) => {
+    exec("which codex", { env: augmentedEnv }, (err, stdout) => {
+      const fromWhich = (stdout || "").trim().split("\n")[0];
+      resolve(
+        fromWhich ||
+          findCodexPath().find((p) => {
+            try { fs.accessSync(p); return true; } catch { return false; }
+          }) ||
+          "codex"
+      );
+    });
+  });
+  return runCodexCommand(codexPath, augmentedEnv);
+}
+
+function findCursorPath() {
+  return [
+    path.join(os.homedir(), ".local/bin/cursor-agent"),
+    "/opt/homebrew/bin/cursor-agent",
+    "/usr/local/bin/cursor-agent",
+  ];
+}
+
+// "Usage • Free                        Resets Sep 1" — the plan tier and
+// the one reset date that applies to every category row below it. Row
+// shape is "<category>   <optional current-value column>   NN% used" —
+// which categories exist isn't a documented fixed set (Free shows
+// Included/Auto/API), so this scans generically rather than assuming
+// fixed fields. Mirrors fetch-cursor-usage.js in dynamic-island-native.
+const CURSOR_HEADER_RE = /^Usage\s*[•·]\s*(.+?)\s{2,}Resets\s+(.+)$/;
+const CURSOR_ROW_RE = /^([A-Za-z][\w/ -]*?)\s{2,}.*?(\d+)%\s*used\s*$/i;
+
+function parseCursorOutput(raw) {
+  const lines = ansiToLines(raw).map((l) => stripBoxChars(l).trim()).filter(Boolean);
+  const header = lines.map((l) => l.match(CURSOR_HEADER_RE)).find(Boolean);
+  if (!header) {
+    if (/sign in|log ?in|not authenticated/i.test(raw)) {
+      return { signedIn: false, plan: null, reset: null, rows: [], error: null };
+    }
+    return { signedIn: true, plan: null, reset: null, rows: [], error: "Could not find usage panel." };
+  }
+  const rows = [];
+  for (const line of lines) {
+    const m = line.match(CURSOR_ROW_RE);
+    if (m) rows.push({ name: m[1].trim(), pctUsed: parseInt(m[2], 10) });
+  }
+  return {
+    signedIn: true,
+    plan: header[1].trim(),
+    reset: header[2].trim(),
+    rows,
+    error: rows.length === 0 ? "Could not parse quota." : null,
+  };
+}
+
+function runCursorCommand(cursorPath, augmentedEnv) {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve({ error: "Timed out." }), 30000);
+    const ptyWrapper = app.isPackaged
+      ? path.join(process.resourcesPath, "cursor-pty-wrapper.py")
+      : path.join(__dirname, "cursor-pty-wrapper.py");
+    const child = spawn("python3", [ptyWrapper, cursorPath], {
+      env: { ...augmentedEnv, TERM: "dumb", FORCE_COLOR: "0" },
+    });
+    const doneTimeout = setTimeout(() => child.kill(), 28000);
+    let accumulated = "";
+    child.stdout.on("data", (d) => (accumulated += d.toString()));
+    child.on("close", () => {
+      clearTimeout(timeout);
+      clearTimeout(doneTimeout);
+      resolve(parseCursorOutput(accumulated));
+    });
+    child.on("error", (e) => {
+      clearTimeout(timeout);
+      resolve({ error: `Process error: ${e.message}` });
+    });
+  });
+}
+
+async function fetchCursorUsage() {
+  const augmentedEnv = pathAugmentedEnv();
+  const cursorPath = await new Promise((resolve) => {
+    exec("which cursor-agent", { env: augmentedEnv }, (err, stdout) => {
+      const fromWhich = (stdout || "").trim().split("\n")[0];
+      resolve(
+        fromWhich ||
+          findCursorPath().find((p) => {
+            try { fs.accessSync(p); return true; } catch { return false; }
+          }) ||
+          "cursor-agent"
+      );
+    });
+  });
+  return runCursorCommand(cursorPath, augmentedEnv);
+}
+
+// The PTY-driven providers time their own input off idle-detection
+// heuristics against a real interactive CLI — a slow machine, a cold-start
+// network round-trip, or a redraw landing at the wrong moment can race that
+// into a genuine parse/timeout error even though the CLI itself is
+// installed and signed in fine. That's different from "not
+// installed"/"not signed in", which come back with `error` unset and are
+// never retried here — only a real `error` gets one automatic second
+// attempt before it's surfaced as a failure. Mirrors
+// UsageService.withRetryOnError in the native app.
+async function withRetryOnError(fetchFn) {
+  const first = await fetchFn();
+  if (!first || !first.error) return first;
+  const second = await fetchFn();
+  return second || first;
+}
+
 // Runs after Claude's own fetch, mirroring UsageService.refresh() in the
 // native app: detection first (cheap, just `which`), then only actually
-// drive Antigravity's PTY if detection found it installed — Codex/Cursor
-// have no driver yet, so detection alone is all their status will ever show.
+// drive whichever CLIs detection found installed — in parallel with each
+// other via Promise.all, same as the native app's async-let batch, since
+// none of them depend on each other.
 //
-// `isAgyPolling` mirrors Claude's own `isPolling` guard — a manual refresh
-// click landing while the 5-minute auto-poll (or another manual click) is
-// already mid-flight would otherwise spawn a second concurrent `agy`
-// process contending over the same CLI session/auth state, which was a
-// contributor to the intermittent "Could not find quota panel" failures.
-let isAgyPolling = false;
+// `isOtherProvidersPolling` mirrors Claude's own `isPolling` guard — a
+// manual refresh click landing while the 5-minute auto-poll (or another
+// manual click) is already mid-flight would otherwise spawn a second
+// concurrent PTY drive contending over the same CLI session/auth state,
+// which was a contributor to the intermittent "Could not find quota panel"
+// failures.
+let isOtherProvidersPolling = false;
 async function refreshOtherProviders() {
-  if (isAgyPolling) return;
-  isAgyPolling = true;
+  if (isOtherProvidersPolling) return;
+  isOtherProvidersPolling = true;
   try {
     const detected = await detectOtherProviders();
-    if (detected.antigravity?.state === "installed") {
-      const result = await fetchAntigravityUsage();
-      if (result.error) {
+
+    const [agyResult, codexResult, cursorResult] = await Promise.all([
+      detected.antigravity?.state === "installed" ? withRetryOnError(fetchAntigravityUsage) : null,
+      detected.codex?.state === "installed" ? withRetryOnError(fetchCodexUsage) : null,
+      detected.cursor?.state === "installed" ? withRetryOnError(fetchCursorUsage) : null,
+    ]);
+
+    if (agyResult) {
+      if (agyResult.error) {
         // Same rule applyUsageData() uses for Claude: a transient failure
         // (agy hiccuped, the PTY drive timed out) shouldn't blank the tab back
         // to an error screen if we already have real cached percentages —
         // keep showing them, with the error surfaced alongside as a hint.
         const hasCachedData = antigravityData.fiveHourPct != null || antigravityData.weeklyPct != null;
         detected.antigravity = hasCachedData
-          ? { state: "loggedIn", message: result.error }
-          : { state: "error", message: result.error };
-      } else if (result.signedIn === false) {
+          ? { state: "loggedIn", message: agyResult.error }
+          : { state: "error", message: agyResult.error };
+      } else if (agyResult.signedIn === false) {
         detected.antigravity = { state: "installed", message: null };
       } else {
         antigravityData = {
-          fiveHourPct: result.fiveHourPct,
-          weeklyPct: result.weeklyPct,
-          fiveHourReset: result.fiveHourReset,
-          weeklyReset: result.weeklyReset,
+          fiveHourPct: agyResult.fiveHourPct,
+          weeklyPct: agyResult.weeklyPct,
+          fiveHourReset: agyResult.fiveHourReset,
+          weeklyReset: agyResult.weeklyReset,
           error: null,
           lastUpdated: Date.now(),
         };
         detected.antigravity = { state: "loggedIn", message: null };
       }
     }
+
+    if (codexResult) {
+      if (codexResult.error) {
+        const hasCachedData = !!(codexData.limits && codexData.limits.length);
+        detected.codex = hasCachedData
+          ? { state: "loggedIn", message: codexResult.error }
+          : { state: "error", message: codexResult.error };
+      } else if (codexResult.signedIn === false) {
+        detected.codex = { state: "installed", message: null };
+      } else {
+        codexData = {
+          plan: codexResult.plan,
+          limits: codexResult.limits,
+          error: null,
+          lastUpdated: Date.now(),
+        };
+        detected.codex = { state: "loggedIn", message: null };
+      }
+    }
+
+    if (cursorResult) {
+      if (cursorResult.error) {
+        const hasCachedData = !!(cursorData.rows && cursorData.rows.length);
+        detected.cursor = hasCachedData
+          ? { state: "loggedIn", message: cursorResult.error }
+          : { state: "error", message: cursorResult.error };
+      } else if (cursorResult.signedIn === false) {
+        detected.cursor = { state: "installed", message: null };
+      } else {
+        cursorData = {
+          plan: cursorResult.plan,
+          reset: cursorResult.reset,
+          rows: cursorResult.rows,
+          error: null,
+          lastUpdated: Date.now(),
+        };
+        detected.cursor = { state: "loggedIn", message: null };
+      }
+    }
+
     providerStatus = detected;
   } finally {
-    isAgyPolling = false;
+    isOtherProvidersPolling = false;
   }
 }
 
@@ -649,6 +896,24 @@ async function generateTrayIcon(pct, color, fallbackLabel) {
   }
 }
 
+// The one figure that best represents "quota right now" for each provider —
+// same rolling-window-first preference the native app's CodexUsage.primaryPct
+// / CursorUsage.primaryPct use.
+function codexPrimaryPct(data) {
+  const limits = data.limits;
+  if (!limits || !limits.length) return null;
+  const named = (needle) => limits.find((l) => l.name.toLowerCase().includes(needle));
+  const pick = named("5h") || named("weekly") || limits[0];
+  return pick ? pick.pctUsed : null;
+}
+
+function cursorPrimaryPct(data) {
+  const rows = data.rows;
+  if (!rows || !rows.length) return null;
+  const pick = rows.find((r) => r.name.toLowerCase() === "included") || rows[0];
+  return pick ? pick.pctUsed : null;
+}
+
 async function updateTrayTitle() {
   if (!tray) return;
 
@@ -710,9 +975,37 @@ async function updateTrayTitle() {
     return;
   }
 
-  // Antigravity-not-signed-in, Codex, Cursor — no real quota to show yet, just
-  // a brand-colored letter badge so the tray still reflects which provider's
-  // tab is open in the popup.
+  if (selectedProviderId === "codex" && providerStatus.codex?.state === "loggedIn") {
+    const pct = codexPrimaryPct(codexData);
+    tray.setToolTip(`Codex Usage (${codexData.plan || "?"}) — ${pct ?? "?"}%`);
+    const icon = await generateTrayIcon(pct, color, letter);
+    if (icon) {
+      tray.setImage(icon);
+      tray.setTitle("");
+    } else {
+      tray.setImage(nativeImage.createEmpty());
+      tray.setTitle(`${letter} ${pct ?? "?"}%`);
+    }
+    return;
+  }
+
+  if (selectedProviderId === "cursor" && providerStatus.cursor?.state === "loggedIn") {
+    const pct = cursorPrimaryPct(cursorData);
+    tray.setToolTip(`Cursor Usage (${cursorData.plan || "?"}) — ${pct ?? "?"}%`);
+    const icon = await generateTrayIcon(pct, color, letter);
+    if (icon) {
+      tray.setImage(icon);
+      tray.setTitle("");
+    } else {
+      tray.setImage(nativeImage.createEmpty());
+      tray.setTitle(`${letter} ${pct ?? "?"}%`);
+    }
+    return;
+  }
+
+  // Anything not signed in yet, or still being checked — no real quota to
+  // show, just a brand-colored letter badge so the tray still reflects
+  // which provider's tab is open in the popup.
   const status = providerStatus[selectedProviderId];
   tray.setToolTip(status?.message ? `${letter}: ${status.message}` : "Claude Tray");
   const icon = await generateTrayIcon(null, color, letter);
@@ -730,7 +1023,14 @@ async function updateTrayTitle() {
 // wizard's "Checking Claude Code" step, which needs to react live since it
 // can be open before the very first fetch resolves.
 function combinedUsagePayload() {
-  return { claude: usageData, antigravity: antigravityData, providers: providerStatus, isRefreshing };
+  return {
+    claude: usageData,
+    antigravity: antigravityData,
+    codex: codexData,
+    cursor: cursorData,
+    providers: providerStatus,
+    isRefreshing,
+  };
 }
 
 function broadcastUsageUpdate() {
