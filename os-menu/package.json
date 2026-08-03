@@ -1,6 +1,6 @@
 {
   "name": "claude-tray",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Claude usage in your system tray",
   "main": "main.js",
   "scripts": {
@@ -30,6 +30,14 @@
       {
         "from": "agy-pty-wrapper.py",
         "to": "agy-pty-wrapper.py"
+      },
+      {
+        "from": "codex-pty-wrapper.py",
+        "to": "codex-pty-wrapper.py"
+      },
+      {
+        "from": "cursor-pty-wrapper.py",
+        "to": "cursor-pty-wrapper.py"
       }
     ],
     "mac": {
