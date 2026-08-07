@@ -41,6 +41,24 @@ let usageData = {
 };
 let pollInterval = null;
 let isPolling = false;
+
+// Every python3 pty-wrapper (and the Windows node-pty session) spawned to
+// fetch a provider's usage gets tracked here so before-quit can kill them —
+// otherwise a restart mid-fetch (common during dev, or a crash) abandons
+// the wrapper's forked CLI child running in the background indefinitely,
+// since nothing else ever reaps a `setsid()` orphan.
+const activeChildren = new Set();
+function trackChild(child) {
+  activeChildren.add(child);
+  const untrack = () => activeChildren.delete(child);
+  if (child.once) {
+    child.once("close", untrack);
+    child.once("error", untrack);
+  } else if (child.onExit) {
+    child.onExit(untrack); // node-pty
+  }
+  return child;
+}
 // Whole-refresh-cycle flag (Claude + every other provider fetch together
 // each cycle) — broadcast to the popup so each provider tab's dot can pulse
 // while a fetch is in flight, distinct from that dot's resting usage/status color.
@@ -190,9 +208,9 @@ function runAgyCommand(agyPath, augmentedEnv) {
     const ptyWrapper = app.isPackaged
       ? path.join(process.resourcesPath, "agy-pty-wrapper.py")
       : path.join(__dirname, "agy-pty-wrapper.py");
-    const child = spawn("python3", [ptyWrapper, agyPath], {
+    const child = trackChild(spawn("python3", [ptyWrapper, agyPath], {
       env: { ...augmentedEnv, TERM: "dumb", FORCE_COLOR: "0" },
-    });
+    }));
     const doneTimeout = setTimeout(() => child.kill(), 58000);
     let accumulated = "";
     child.stdout.on("data", (d) => (accumulated += d.toString()));
@@ -272,9 +290,9 @@ function runCodexCommand(codexPath, augmentedEnv) {
     const ptyWrapper = app.isPackaged
       ? path.join(process.resourcesPath, "codex-pty-wrapper.py")
       : path.join(__dirname, "codex-pty-wrapper.py");
-    const child = spawn("python3", [ptyWrapper, codexPath], {
+    const child = trackChild(spawn("python3", [ptyWrapper, codexPath], {
       env: { ...augmentedEnv, TERM: "dumb", FORCE_COLOR: "0" },
-    });
+    }));
     const doneTimeout = setTimeout(() => child.kill(), 28000);
     let accumulated = "";
     child.stdout.on("data", (d) => (accumulated += d.toString()));
@@ -353,9 +371,9 @@ function runCursorCommand(cursorPath, augmentedEnv) {
     const ptyWrapper = app.isPackaged
       ? path.join(process.resourcesPath, "cursor-pty-wrapper.py")
       : path.join(__dirname, "cursor-pty-wrapper.py");
-    const child = spawn("python3", [ptyWrapper, cursorPath], {
+    const child = trackChild(spawn("python3", [ptyWrapper, cursorPath], {
       env: { ...augmentedEnv, TERM: "dumb", FORCE_COLOR: "0" },
-    });
+    }));
     const doneTimeout = setTimeout(() => child.kill(), 28000);
     let accumulated = "";
     child.stdout.on("data", (d) => (accumulated += d.toString()));
@@ -659,7 +677,7 @@ function runClaudeCommand(command, parseFn) {
 
           log("Windows ConPTY spawning:", claudeCmd);
 
-          const ptyProc = nodePty.spawn(claudeCmd, [command], {
+          const ptyProc = trackChild(nodePty.spawn(claudeCmd, [command], {
             name: "xterm",
             // Default 30 rows truncates /stats' bottom section; grow it so
             // the TUI renders everything in one frame (mirrors pty-wrapper.py).
@@ -672,7 +690,7 @@ function runClaudeCommand(command, parseFn) {
               FORCE_COLOR: "0",
               CLAUDE_CODE_DISABLE_ANIMATIONS: "true",
             },
-          });
+          }));
 
           let accumulatedOutput = "";
           let settled = false;
@@ -740,14 +758,14 @@ function runClaudeCommand(command, parseFn) {
           ? path.join(process.resourcesPath, "pty-wrapper.py")
           : path.join(__dirname, "pty-wrapper.py");
 
-        const child = spawn("python3", [ptyWrapper, claudePath, command], {
+        const child = trackChild(spawn("python3", [ptyWrapper, claudePath, command], {
           env: {
             ...augmentedEnv,
             TERM: "dumb", // Essential for consistent parsing
             FORCE_COLOR: "0",
             CLAUDE_CODE_DISABLE_ANIMATIONS: "true", // Strips TUI fluff
           },
-        });
+        }));
 
         const doneTimeout = setTimeout(() => {
           if (child) child.kill();
@@ -1351,4 +1369,12 @@ app.on("window-all-closed", (e) => {
 
 app.on("before-quit", () => {
   if (pollInterval) clearInterval(pollInterval);
+  // Otherwise a fetch in flight at quit time is abandoned with its
+  // python3/agy/codex/cursor-agent subtree still running — see activeChildren.
+  for (const child of activeChildren) {
+    try {
+      child.kill();
+    } catch (e) {}
+  }
+  activeChildren.clear();
 });

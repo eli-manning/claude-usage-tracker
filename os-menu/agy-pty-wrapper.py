@@ -38,10 +38,25 @@ WIZARD_TIMEOUT_S = 35
 TOTAL_TIMEOUT_S = 55
 
 
+class _Terminated(Exception):
+    pass
+
+
+def _handle_sigterm(signum, frame):
+    raise _Terminated()
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(1)
     agy_path = sys.argv[1]
+    # Node kills this wrapper with SIGTERM on a stall (see main.js's
+    # doneTimeout). Python's default SIGTERM disposition terminates the
+    # process immediately without running `finally` blocks, which orphaned
+    # the forked agy child below instead of ever reaching the os.kill(pid)
+    # cleanup — this handler turns SIGTERM into a normal exception so the
+    # existing try/finally still runs.
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     master, slave = pty.openpty()
     if fcntl and termios:
@@ -80,101 +95,104 @@ def main():
     enter_after_command_at = None
 
     try:
-        while True:
-            now = time.time()
-            if now - start > TOTAL_TIMEOUT_S:
-                break
+        try:
+            while True:
+                now = time.time()
+                if now - start > TOTAL_TIMEOUT_S:
+                    break
 
-            r, _, _ = select.select([master], [], [], 0.1)
-            if r:
-                try:
-                    data = os.read(master, 4096)
-                    if not data:
+                r, _, _ = select.select([master], [], [], 0.1)
+                if r:
+                    try:
+                        data = os.read(master, 4096)
+                        if not data:
+                            break
+                        buf += data
+                        last_data = time.time()
+                    except OSError:
                         break
-                    buf += data
-                    last_data = time.time()
-                except OSError:
+
+                now = time.time()
+                idle_for = now - last_data
+
+                if ready_seen_at is None and READY_MARKER in buf:
+                    ready_seen_at = now
+
+                # First-run onboarding (color scheme, workspace trust) blocks the
+                # ready prompt — nudge through it with Enter (accepts defaults),
+                # capped so a stuck/offline sign-in can't spin forever.
+                if (
+                    ready_seen_at is None
+                    and idle_for > IDLE_QUIET_S
+                    and (now - last_enter) > 1.2
+                    and (now - start) < WIZARD_TIMEOUT_S
+                ):
+                    try:
+                        os.write(master, b"\r")
+                        last_enter = now
+                    except OSError:
+                        pass
+
+                if (
+                    ready_seen_at is not None
+                    and not typed_command
+                    and idle_for > IDLE_QUIET_S
+                    and now - ready_seen_at > 0.3
+                ):
+                    try:
+                        os.write(master, b"/usage")
+                        typed_command = True
+                        command_sent_at = now
+                        last_data = now
+                    except OSError:
+                        pass
+
+                if typed_command and enter_after_command_at is None and now - command_sent_at > 1.0:
+                    try:
+                        os.write(master, b"\r")
+                        enter_after_command_at = now
+                    except OSError:
+                        pass
+
+                # A cold session can have a real network round-trip for quota
+                # data between the command executing and the panel actually
+                # painting — 1s of terminal silence can land right in that gap
+                # (server latency, not user/terminal idleness), which was
+                # grabbing a screen before the panel had rendered. Require the
+                # panel to actually show up in the buffer, not just quiet time,
+                # before trusting a quiet screen. NOT_SIGNED_IN_MARKER is
+                # deliberately *not* treated as a stop signal here — it flashes
+                # transiently during the normal startup handshake before a
+                # cached-token session silently signs itself in (see
+                # parseAgyOutput's own comment on this same behavior), so
+                # breaking out on it early was grabbing that transient flash
+                # instead of waiting for the real panel a moment later. Falls
+                # back to the old idle-only rule after PANEL_FALLBACK_TIMEOUT_S
+                # so a changed/missing marker (or a genuinely logged-out
+                # session) can't hang the whole capture — parseAgyOutput on the
+                # Node side is what actually decides signed-in vs. error from
+                # whatever's in the final buffer.
+                if (
+                    enter_after_command_at is not None
+                    and idle_for > IDLE_QUIET_S
+                ):
+                    if PANEL_READY_MARKER in buf or (now - enter_after_command_at) > PANEL_FALLBACK_TIMEOUT_S:
+                        break
+
+                if os.waitpid(pid, os.WNOHANG)[0] != 0:
                     break
-
-            now = time.time()
-            idle_for = now - last_data
-
-            if ready_seen_at is None and READY_MARKER in buf:
-                ready_seen_at = now
-
-            # First-run onboarding (color scheme, workspace trust) blocks the
-            # ready prompt — nudge through it with Enter (accepts defaults),
-            # capped so a stuck/offline sign-in can't spin forever.
-            if (
-                ready_seen_at is None
-                and idle_for > IDLE_QUIET_S
-                and (now - last_enter) > 1.2
-                and (now - start) < WIZARD_TIMEOUT_S
-            ):
-                try:
-                    os.write(master, b"\r")
-                    last_enter = now
-                except OSError:
-                    pass
-
-            if (
-                ready_seen_at is not None
-                and not typed_command
-                and idle_for > IDLE_QUIET_S
-                and now - ready_seen_at > 0.3
-            ):
-                try:
-                    os.write(master, b"/usage")
-                    typed_command = True
-                    command_sent_at = now
-                    last_data = now
-                except OSError:
-                    pass
-
-            if typed_command and enter_after_command_at is None and now - command_sent_at > 1.0:
-                try:
-                    os.write(master, b"\r")
-                    enter_after_command_at = now
-                except OSError:
-                    pass
-
-            # A cold session can have a real network round-trip for quota
-            # data between the command executing and the panel actually
-            # painting — 1s of terminal silence can land right in that gap
-            # (server latency, not user/terminal idleness), which was
-            # grabbing a screen before the panel had rendered. Require the
-            # panel to actually show up in the buffer, not just quiet time,
-            # before trusting a quiet screen. NOT_SIGNED_IN_MARKER is
-            # deliberately *not* treated as a stop signal here — it flashes
-            # transiently during the normal startup handshake before a
-            # cached-token session silently signs itself in (see
-            # parseAgyOutput's own comment on this same behavior), so
-            # breaking out on it early was grabbing that transient flash
-            # instead of waiting for the real panel a moment later. Falls
-            # back to the old idle-only rule after PANEL_FALLBACK_TIMEOUT_S
-            # so a changed/missing marker (or a genuinely logged-out
-            # session) can't hang the whole capture — parseAgyOutput on the
-            # Node side is what actually decides signed-in vs. error from
-            # whatever's in the final buffer.
-            if (
-                enter_after_command_at is not None
-                and idle_for > IDLE_QUIET_S
-            ):
-                if PANEL_READY_MARKER in buf or (now - enter_after_command_at) > PANEL_FALLBACK_TIMEOUT_S:
-                    break
-
-            if os.waitpid(pid, os.WNOHANG)[0] != 0:
-                break
-    finally:
-        try:
-            os.close(master)
-        except OSError:
-            pass
-        try:
-            os.kill(pid, signal.SIGTERM)
-            os.waitpid(pid, 0)
-        except OSError:
-            pass
+        finally:
+            try:
+                os.close(master)
+            except OSError:
+                pass
+            try:
+                os.kill(pid, signal.SIGTERM)
+                os.waitpid(pid, 0)
+            except OSError:
+                pass
+    except _Terminated:
+        pass
 
     sys.stdout.buffer.write(buf)
     sys.stdout.buffer.flush()
